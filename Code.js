@@ -1,0 +1,490 @@
+/**
+ * Code.gs - 全社実績ダッシュボード管理
+ * - Dashboard: Month/Quarter/Half/Year x 5 Columns
+ * - Metrics: 17 items (Qty -> Average, Amt -> Sum)
+ * - Y1000 Header Fix
+ * - Target/Prev assumed to be Daily Averages in CSV
+ */
+
+const CONFIG = {
+    FOLDER_NAME: '実績CSVアップロード',
+    PROCESSED_FOLDER_NAME: 'processed',
+    FOLDER_MASTER_IMPORT: 'マスタデータ取込',
+    SS_NAME: '全社実績ダッシュボード',
+    SHEET_SUMMARY: 'サマリーシート',
+    SHEET_TARGET: '目標マスター',
+    SHEET_PREV: '前年実績マスター',
+    NAME_S1: '営業計',
+    NAME_S2: '直販他計'
+};
+
+function onOpen() {
+    try {
+        const ui = SpreadsheetApp.getUi();
+        ui.createMenu('ダッシュボード管理')
+            .addItem('CSVを取り込む（今すぐ実行）', 'importCSV')
+            .addItem('マスタデータをCSVから取り込む', 'importMasterData')
+            .addItem('サマリーのみ更新', 'updateSummarySheet')
+            .addToUi();
+    } catch (e) {
+        console.warn('onOpen UI check failed: ' + e.message);
+    }
+}
+
+function setup() {
+    console.log('Starting setup...');
+    const ss = getOrCreateSpreadsheet();
+    if (!ss) throw new Error("Spreadsheet error.");
+
+    let sSheet = ss.getSheetByName(CONFIG.SHEET_SUMMARY);
+    if (!sSheet) {
+        sSheet = ss.insertSheet(CONFIG.SHEET_SUMMARY);
+        sSheet.getRange('A1').setValue('全社販売実績ダッシュボード').setFontSize(14).setFontWeight('bold');
+        sSheet.getRange('A3').setValue('基準日:');
+        sSheet.getRange('B3').setValue(new Date());
+    }
+
+    createMasterSheet(ss, CONFIG.SHEET_TARGET, 0);
+    createMasterSheet(ss, CONFIG.SHEET_PREV, -1);
+
+    ensureFolder(CONFIG.FOLDER_NAME);
+    ensureFolder(CONFIG.FOLDER_MASTER_IMPORT);
+
+    console.log('Setup completed.');
+}
+
+function importMasterData() {
+    console.log('Starting Master Import...');
+    const ss = getOrCreateSpreadsheet();
+    if (!ss) {
+        logOrAlert('エラー: スプレッドシートが見つかりません。');
+        return;
+    }
+
+    const folders = DriveApp.getFoldersByName(CONFIG.FOLDER_MASTER_IMPORT);
+    if (!folders.hasNext()) {
+        logOrAlert('フォルダ「' + CONFIG.FOLDER_MASTER_IMPORT + '」が見つかりません。');
+        return;
+    }
+
+    const folder = folders.next();
+    const files = folder.getFiles();
+    let importedCount = 0;
+
+    while (files.hasNext()) {
+        const file = files.next();
+        const name = file.getName().toLowerCase();
+
+        if (name === 'target.csv') {
+            importMasterCSV(ss, file, CONFIG.SHEET_TARGET);
+            importedCount++;
+        } else if (name === 'prev.csv') {
+            importMasterCSV(ss, file, CONFIG.SHEET_PREV);
+            importedCount++;
+        }
+    }
+
+    if (importedCount > 0) {
+        logOrAlert('マスタデータの取り込みが完了しました。件数: ' + importedCount);
+        updateSummarySheet();
+    } else {
+        logOrAlert('target.csv または prev.csv が見つかりませんでした。');
+    }
+}
+
+function logOrAlert(msg) {
+    console.log(msg);
+    try {
+        SpreadsheetApp.getUi().alert(msg);
+    } catch (e) { }
+}
+
+function importMasterCSV(ss, file, sheetName) {
+    if (!ss) return;
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return;
+
+    console.log('Importing ' + file.getName() + ' to ' + sheetName);
+    const csvString = file.getBlob().getDataAsString('Shift_JIS');
+    const data = Utilities.parseCsv(csvString);
+
+    let startRow = 0;
+    if (data.length > 0 && isNaN(Date.parse(data[0][0]))) {
+        startRow = 1;
+    }
+
+    const rowsToWrite = [];
+    for (let i = startRow; i < data.length; i++) {
+        const row = data[i];
+        if (row.length < 18 || !row[0]) continue;
+
+        const dDate = new Date(row[0]);
+        if (isNaN(dDate.getTime()) || dDate.getFullYear() < 2000) continue;
+
+        const values = row.slice(1, 18).map(v => parseNumber(v));
+        rowsToWrite.push([dDate, ...values]);
+    }
+
+    if (rowsToWrite.length === 0) {
+        logOrAlert('有効なデータが見つかりませんでした。CSVの日付形式を確認してください。');
+        return;
+    }
+
+    const lastRow = sheet.getLastRow();
+    if (lastRow >= 2) {
+        sheet.getRange(2, 1, lastRow - 1, 18).clearContent();
+    }
+
+    sheet.getRange(2, 1, rowsToWrite.length, 18).setValues(rowsToWrite);
+    console.log('Imported ' + rowsToWrite.length + ' rows.');
+}
+
+function createMasterSheet(ss, sheetName, offsetYear) {
+    let sheet = ss.getSheetByName(sheetName);
+    if (sheet) return;
+
+    sheet = ss.insertSheet(sheetName);
+    const tHeaders = [
+        '年月',
+        'S1_全_金', 'S1_乳_金', 'S1_乳_本', 'S1_400_金', 'S1_400_本', 'S1_1000_金', 'S1_1000_本',
+        'S2_全_金', 'S2_乳_金', 'S2_乳_本', 'S2_400_金', 'S2_400_本', 'S2_1000_金', 'S2_1000_本',
+        'R_全社_金', 'S_全乳_金', 'T_全乳_本'
+    ];
+    sheet.getRange(1, 1, 1, tHeaders.length).setValues([tHeaders]).setFontWeight('bold').setBackground('#c9daf8');
+
+    const today = new Date();
+    const currentFY = getFiscalYear(today);
+    const targetFY = currentFY + offsetYear;
+
+    const rows = [];
+    for (let i = 0; i < 12; i++) {
+        const d = new Date(targetFY, 3 + i, 1);
+        const row = [d, ...new Array(17).fill(0)];
+        rows.push(row);
+    }
+    sheet.getRange(2, 1, 12, 18).setValues(rows);
+    sheet.getRange('A:A').setNumberFormat('yyyy/MM');
+    sheet.getRange(2, 2, 12, 17).setNumberFormat('#,##0');
+    sheet.setColumnWidth(1, 100);
+    sheet.setColumnWidths(2, 17, 80);
+}
+
+function importCSV() {
+    const folders = DriveApp.getFoldersByName(CONFIG.FOLDER_NAME);
+    if (!folders.hasNext()) return;
+    const folder = folders.next();
+    const files = folder.getFilesByType(MimeType.CSV);
+    const ss = getOrCreateSpreadsheet();
+    let processedAny = false;
+    while (files.hasNext()) {
+        try {
+            processFile(files.next(), ss);
+            processedAny = true;
+        } catch (e) {
+            console.error('Error: ' + e.message);
+        }
+    }
+    if (processedAny) updateSummarySheet();
+}
+
+function processFile(file, ss) {
+    console.log('Processing: ' + file.getName());
+    const csvString = file.getBlob().getDataAsString('Shift_JIS');
+    const csvData = Utilities.parseCsv(csvString);
+    let header = csvData.shift();
+    if (!header) return;
+    header = header.map(h => h.trim());
+
+    const cols = {
+        name: header.indexOf('名称'),
+        item: header.indexOf('項目'),
+        total: findHeaderIndex(header, ['合　計', '合計']),
+        dairy: findHeaderIndex(header, ['乳製品計']),
+        y400: findHeaderIndex(header, ['Y400類']),
+        // Expanded fuzzy match for Y1000
+        y1000: findHeaderIndex(header, ['Y1000類', 'Yakult1000類', 'Y1000', 'Yakult1000', 'Y1000本'])
+    };
+    if (cols.name === -1 || cols.item === -1) return;
+
+    let date = extractDateFromFilename(file.getName());
+    if (!date) date = new Date();
+
+    const record = {
+        [CONFIG.NAME_S1]: { amt: {}, qty: {} },
+        [CONFIG.NAME_S2]: { amt: {}, qty: {} }
+    };
+
+    csvData.forEach(row => {
+        const name = row[cols.name] ? row[cols.name].trim() : '';
+        const rawItem = row[cols.item] ? row[cols.item] : '';
+        const item = rawItem.replace(/\s+/g, ''); // Remove spaces
+
+        if (!record[name]) return;
+        let typeKey = null;
+        if (item === '金額') typeKey = 'amt';
+        else if (item === '総本数') typeKey = 'qty';
+
+        if (typeKey) {
+            const t = record[name][typeKey];
+            t.total = parseNumber(row[cols.total]);
+            t.dairy = parseNumber(row[cols.dairy]);
+            t.y400 = parseNumber(row[cols.y400]);
+            t.y1000 = parseNumber(row[cols.y1000]);
+        }
+    });
+
+    const v = (val) => val || 0;
+    const s1 = record[CONFIG.NAME_S1];
+    const s2 = record[CONFIG.NAME_S2];
+    const allTotalAmt = v(s1.amt.total) + v(s2.amt.total);
+    const allDairyAmt = v(s1.amt.dairy) + v(s2.amt.dairy);
+    const allDairyQty = v(s1.qty.dairy) + v(s2.qty.dairy);
+
+    const rowValues = [
+        v(s1.amt.total),
+        v(s1.amt.dairy), v(s1.qty.dairy),
+        v(s1.amt.y400), v(s1.qty.y400),
+        v(s1.amt.y1000), v(s1.qty.y1000),
+        v(s2.amt.total),
+        v(s2.amt.dairy), v(s2.qty.dairy),
+        v(s2.amt.y400), v(s2.qty.y400),
+        v(s2.amt.y1000), v(s2.qty.y1000),
+        allTotalAmt, allDairyAmt, allDairyQty
+    ];
+
+    writeToMonthlySheet(ss, date, rowValues);
+    moveFileToProcessed(file);
+}
+
+function writeToMonthlySheet(ss, date, dataArray) {
+    const sheetName = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy_MM');
+    let sheet = ss.getSheetByName(sheetName);
+    if (!sheet) sheet = createMonthlySheet(ss, sheetName, date);
+    const day = date.getDate();
+    const row = day + 1;
+    if (row <= 32) sheet.getRange(row, 2, 1, dataArray.length).setValues([dataArray]);
+}
+
+function createMonthlySheet(ss, sheetName, date) {
+    const sheet = ss.insertSheet(sheetName);
+    const headers = [
+        'Date',
+        'S1_全_金', 'S1_乳_金', 'S1_乳_本', 'S1_400_金', 'S1_400_本', 'S1_1000_金', 'S1_1000_本',
+        'S2_全_金', 'S2_乳_金', 'S2_乳_本', 'S2_400_金', 'S2_400_本', 'S2_1000_金', 'S2_1000_本',
+        'R_全社_金', 'S_全乳_金', 'T_全乳_本'
+    ];
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold').setBackground('#ddd');
+
+    const days = [];
+    for (let i = 1; i <= 31; i++) days.push([i]);
+    sheet.getRange(2, 1, 31, 1).setValues(days);
+
+    sheet.getRange(33, 1).setValue('月計・平均').setFontWeight('bold');
+
+    const qtyIndices = [2, 4, 6, 9, 11, 13, 16];
+    const formulas = [];
+    for (let i = 0; i < 17; i++) {
+        if (qtyIndices.includes(i)) formulas.push('=AVERAGE(R[-31]C:R[-1]C)');
+        else formulas.push('=SUM(R[-31]C:R[-1]C)');
+    }
+    sheet.getRange(33, 2, 1, 17).setFormulasR1C1([formulas]).setFontWeight('bold').setBackground('#fff0f0');
+    return sheet;
+}
+
+function updateSummarySheet() {
+    const ss = getOrCreateSpreadsheet();
+    const sSheet = ss.getSheetByName(CONFIG.SHEET_SUMMARY);
+    if (!sSheet) return;
+
+    const baseDate = new Date(sSheet.getRange('B3').getValue());
+    const fy = getFiscalYear(baseDate);
+    const targetMap = getMasterValues(ss, CONFIG.SHEET_TARGET);
+    const prevMap = getMasterValues(ss, CONFIG.SHEET_PREV);
+
+    const metrics = [
+        'S1 全社売上', 'S1 乳製品売上', 'S1 乳製品本数', 'S1 Y400売上', 'S1 Y400本数', 'S1 Y1000売上', 'S1 Y1000本数',
+        'S2 全社売上', 'S2 乳製品売上', 'S2 乳製品本数', 'S2 Y400売上', 'S2 Y400本数', 'S2 Y1000売上', 'S2 Y1000本数',
+        '全社売上計', '全社乳製品計', '全社乳製品本数'
+    ];
+    // Qty indices for Average calculation
+    const qtyIndices = [2, 4, 6, 9, 11, 13, 16];
+
+    // Stats now tracks SUM and COUNT (for averages)
+    const createStatObj = () => ({ sums: createZeroStats(), counts: createZeroStats() });
+    const initStats = () => ({ actual: createStatObj(), target: createStatObj(), prev: createStatObj() });
+
+    const sumRange = (startMonthIndex, duration) => {
+        let stats = initStats();
+        for (let i = 0; i < duration; i++) {
+            const mOffset = startMonthIndex + i;
+            const d = new Date(fy, 3 + mOffset, 1);
+
+            if (d <= baseDate) {
+                const key = Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy_MM');
+                const totals = getSheetTotals(ss, key); // Returns {sums, counts}
+
+                // Actuals: Accumulate Sum and Count of valid days (for calculating Daily Average)
+                addToStatObj(stats.actual, totals.sums, totals.counts);
+
+                // Target/Prev: Values are ALREADY Monthly Averages (for Qty) or Totals (for Amt).
+                // For Qty Average over Quarter/Year: We sum the Monthly Averages and divide by Month Count.
+                // For Amt Total: We just sum.
+                const tgtVals = targetMap[key] || createZeroStats();
+                const countArr = new Array(17).fill(1); // Count as 1 month
+                addToStatObj(stats.target, tgtVals, countArr);
+
+                const prevD = new Date(d.getFullYear() - 1, d.getMonth(), 1);
+                const prevKey = Utilities.formatDate(prevD, Session.getScriptTimeZone(), 'yyyy_MM');
+                const prevVals = prevMap[prevKey] || createZeroStats();
+                addToStatObj(stats.prev, prevVals, countArr);
+            }
+        }
+        return stats;
+    };
+
+    let baseMonthIdx = baseDate.getMonth() - 3;
+    if (baseMonthIdx < 0) baseMonthIdx += 12;
+
+    // Calc Stats
+    const mStats = sumRange(baseMonthIdx, 1);
+    const qStartIdx = Math.floor(baseMonthIdx / 3) * 3;
+    const qStats = sumRange(qStartIdx, 3);
+    const hStartIdx = baseMonthIdx < 6 ? 0 : 6;
+    const hStats = sumRange(hStartIdx, 6);
+    const yStats = sumRange(0, 12);
+
+    // Rendering Function
+    const drawBlock = (title, startRow, stats) => {
+        sSheet.getRange(startRow, 1).setValue(title).setFontWeight('bold');
+        const headerRow = ['項目', '実績', '目標', '達成率', '前年実績', '前年比'];
+        sSheet.getRange(startRow + 1, 1, 1, 6).setValues([headerRow]).setBackground('#dedede').setFontWeight('bold');
+
+        const rows = [];
+        for (let i = 0; i < 17; i++) {
+            // Calculate Value (Average for Qty, Sum for Amt)
+            const isQty = qtyIndices.includes(i);
+
+            let act = stats.actual.sums[i];
+            let tgt = stats.target.sums[i];
+            let prv = stats.prev.sums[i];
+
+            if (isQty) {
+                // Actual Qty: Divide by Day Count (Sum / Days)
+                const actCount = stats.actual.counts[i];
+                act = actCount > 0 ? act / actCount : 0;
+
+                // Target Qty: Divide by Month Count (Sum / Months). 
+                // Because CSV values are ALREADY averages.
+                const tgtCount = stats.target.counts[i];
+                tgt = tgtCount > 0 ? tgt / tgtCount : 0;
+
+                const prvCount = stats.prev.counts[i];
+                prv = prvCount > 0 ? prv / prvCount : 0;
+            }
+
+            const rate = tgt ? act / tgt : 0;
+            const yoy = prv ? act / prv : 0;
+            rows.push([metrics[i], act, tgt, rate, prv, yoy]);
+        }
+        sSheet.getRange(startRow + 2, 1, 17, 6).setValues(rows);
+        sSheet.getRange(startRow + 2, 2, 17, 1).setNumberFormat('#,##0');
+        sSheet.getRange(startRow + 2, 3, 17, 1).setNumberFormat('#,##0');
+        sSheet.getRange(startRow + 2, 5, 17, 1).setNumberFormat('#,##0');
+        sSheet.getRange(startRow + 2, 4, 17, 1).setNumberFormat('0.0%');
+        sSheet.getRange(startRow + 2, 6, 17, 1).setNumberFormat('0.0%');
+        return startRow + 20;
+    };
+
+    let r = 5;
+    r = drawBlock('【単月実績】(' + (baseDate.getMonth() + 1) + '月)', r, mStats);
+    r = drawBlock('【四半期累計】', r, qStats);
+    r = drawBlock('【半期累計】', r, hStats);
+    r = drawBlock('【年間累計】', r, yStats);
+
+    sSheet.getRange('A1').setValue(fy + '年度 全社販売実績ダッシュボード');
+    console.log('Summary updated.');
+}
+
+function getMasterValues(ss, sheetName) {
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return {};
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return {};
+    const data = sheet.getRange(2, 1, lastRow - 1, 18).getValues();
+    const map = {};
+    data.forEach(row => {
+        if (!row[0]) return;
+        const d = new Date(row[0]);
+        const key = Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy_MM');
+        const values = row.slice(1, 18).map(v => parseNumber(v));
+        map[key] = values;
+    });
+    return map;
+}
+
+function getFiscalYear(date) {
+    const m = date.getMonth();
+    return (m < 3) ? date.getFullYear() - 1 : date.getFullYear();
+}
+
+// Updated to return sums AND counts
+function getSheetTotals(ss, sheetName) {
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return { sums: createZeroStats(), counts: createZeroStats() }; // Empty stats
+
+    const data = sheet.getRange(2, 2, 31, 17).getValues();
+    const sums = createZeroStats();
+    const counts = createZeroStats();
+
+    for (let r = 0; r < 31; r++) {
+        for (let c = 0; c < 17; c++) {
+            const val = data[r][c];
+            if (typeof val === 'number') { // Only count if number (even 0)
+                sums[c] += val;
+                // Treat 0 as valid data? Usually yes for daily logs.
+                // Assuming empty cells are '' (string).
+                if (val !== '' && val !== null) counts[c]++;
+            }
+        }
+    }
+    return { sums, counts };
+}
+
+function createZeroStats() { return new Array(17).fill(0); }
+function addToStatObj(targetObj, sums, counts) {
+    for (let i = 0; i < 17; i++) {
+        targetObj.sums[i] += (Number(sums[i]) || 0);
+        targetObj.counts[i] += (Number(counts[i]) || 0);
+    }
+}
+function findHeaderIndex(h, c) {
+    for (const x of c) { const i = h.indexOf(x); if (i !== -1) return i; }
+    return -1;
+}
+function extractDateFromFilename(n) {
+    const m = n.match(/(\d{4})(\d{2})(\d{2})/);
+    if (m) return new Date(m[1], m[2] - 1, m[3]);
+    return null;
+}
+function parseNumber(v) {
+    if (typeof v === 'number') return v;
+    if (typeof v === 'string') return Number(v.replace(/,/g, '').trim()) || 0;
+    return 0;
+}
+function getOrCreateSpreadsheet() {
+    const fs = DriveApp.getFilesByName(CONFIG.SS_NAME);
+    while (fs.hasNext()) {
+        const f = fs.next();
+        if (!f.isTrashed() && f.getMimeType() === MimeType.GOOGLE_SHEETS) return SpreadsheetApp.openById(f.getId());
+    }
+    return SpreadsheetApp.create(CONFIG.SS_NAME);
+}
+function moveFileToProcessed(f) {
+    const fs = DriveApp.getFoldersByName(CONFIG.PROCESSED_FOLDER_NAME);
+    const folder = fs.hasNext() ? fs.next() : DriveApp.createFolder(CONFIG.PROCESSED_FOLDER_NAME);
+    f.moveTo(folder);
+}
+function ensureFolder(name) {
+    const fs = DriveApp.getFoldersByName(name);
+    if (!fs.hasNext()) DriveApp.createFolder(name);
+}
