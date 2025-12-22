@@ -366,6 +366,10 @@ function updateSummarySheet() {
                 const key = Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy_MM');
                 const totals = getSheetTotals(ss, key); // Returns {sums, counts}
 
+                // Change: Use total days of month for Qty counts, not data counts
+                const dim = new Date(fy, 3 + mOffset + 1, 0).getDate();
+                qtyIndices.forEach(idx => { totals.counts[idx] = dim; });
+
                 // Actuals: Accumulate Sum and Count of valid days (for calculating Daily Average)
                 addToStatObj(stats.actual, totals.sums, totals.counts);
 
@@ -499,6 +503,11 @@ function updateMonthlyReportSheet() {
 
         // Actuals
         const totals = getSheetTotals(ss, key);
+
+        // Change: Use total days of month for Qty counts
+        const dim = new Date(fy, 3 + monthIndex + 1, 0).getDate();
+        qtyIndices.forEach(idx => { totals.counts[idx] = dim; });
+
         addToStatObj(stats.actual, totals.sums, totals.counts);
 
         // Target/Prev
