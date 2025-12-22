@@ -12,6 +12,7 @@ const CONFIG = {
     FOLDER_MASTER_IMPORT: 'マスタデータ取込',
     SS_NAME: '全社実績ダッシュボード',
     SHEET_SUMMARY: 'サマリーシート',
+    SHEET_MONTHLY_REPORT: '月別レポート',
     SHEET_TARGET: '目標マスター',
     SHEET_PREV: '前年実績マスター',
     NAME_S1: '営業計',
@@ -25,6 +26,7 @@ function onOpen() {
             .addItem('CSVを取り込む（今すぐ実行）', 'importCSV')
             .addItem('マスタデータをCSVから取り込む', 'importMasterData')
             .addItem('サマリーのみ更新', 'updateSummarySheet')
+            .addItem('月別レポートのみ更新', 'updateMonthlyReportSheet')
             .addItem('手動入力用シート作成', 'createEmptyMonthSheetUI')
             .addToUi();
     } catch (e) {
@@ -383,15 +385,15 @@ function updateSummarySheet() {
         return stats;
     };
 
-    let baseMonthIdx = baseDate.getMonth() - 3;
-    if (baseMonthIdx < 0) baseMonthIdx += 12;
-
     // Calc Stats
-    const mStats = sumRange(baseMonthIdx, 1);
-    const qStartIdx = Math.floor(baseMonthIdx / 3) * 3;
-    const qStats = sumRange(qStartIdx, 3);
-    const hStartIdx = baseMonthIdx < 6 ? 0 : 6;
-    const hStats = sumRange(hStartIdx, 6);
+    const q1Stats = sumRange(0, 3);
+    const q2Stats = sumRange(3, 3);
+    const q3Stats = sumRange(6, 3);
+    const q4Stats = sumRange(9, 3);
+
+    const h1Stats = sumRange(0, 6);
+    const h2Stats = sumRange(6, 6);
+
     const yStats = sumRange(0, 12);
 
     // Rendering Function
@@ -437,13 +439,128 @@ function updateSummarySheet() {
     };
 
     let r = 5;
-    r = drawBlock('【単月実績】(' + (baseDate.getMonth() + 1) + '月)', r, mStats);
-    r = drawBlock('【四半期累計】', r, qStats);
-    r = drawBlock('【半期累計】', r, hStats);
-    r = drawBlock('【年間累計】', r, yStats);
+    r = drawBlock('【第1四半期実績】(4月-6月)', r, q1Stats);
+    r = drawBlock('【第2四半期実績】(7月-9月)', r, q2Stats);
+    r = drawBlock('【第3四半期実績】(10月-12月)', r, q3Stats);
+    r = drawBlock('【第4四半期実績】(1月-3月)', r, q4Stats);
+    r = drawBlock('【上期実績】(4月-9月)', r, h1Stats);
+    r = drawBlock('【下期実績】(10月-3月)', r, h2Stats);
+    r = drawBlock('【年間累計実績】', r, yStats);
+
+    // Clear remaining rows if space exists
+    const maxRows = sSheet.getMaxRows();
+    if (r <= maxRows) {
+        sSheet.getRange(r, 1, maxRows - r + 1, sSheet.getLastColumn()).clearContent();
+    }
 
     sSheet.getRange('A1').setValue(fy + '年度 全社販売実績ダッシュボード');
     console.log('Summary updated.');
+}
+
+function updateMonthlyReportSheet() {
+    const ss = getOrCreateSpreadsheet();
+    let mSheet = ss.getSheetByName(CONFIG.SHEET_MONTHLY_REPORT);
+    if (!mSheet) {
+        mSheet = ss.insertSheet(CONFIG.SHEET_MONTHLY_REPORT);
+        mSheet.getRange('A1').setValue('月別実績レポート').setFontSize(14).setFontWeight('bold');
+        mSheet.getRange('A3').setValue('基準日:');
+        mSheet.getRange('B3').setValue(new Date());
+    }
+
+    const baseDate = new Date(); // Always use today effectively, or check B3 if needed. 
+    // Ideally we sync with summary logic, but here we just show ALL months for the fiscal year of today.
+    const fy = getFiscalYear(baseDate);
+
+    // Refresh B3
+    mSheet.getRange('B3').setValue(baseDate);
+    mSheet.getRange('A1').setValue(fy + '年度 月別実績レポート');
+
+    const targetMap = getMasterValues(ss, CONFIG.SHEET_TARGET);
+    const prevMap = getMasterValues(ss, CONFIG.SHEET_PREV);
+
+    const metrics = [
+        '宅配 全社売上', '宅配 乳製品売上', '宅配 乳製品本数', '宅配 Y400売上', '宅配 Y400本数', '宅配 Y1000売上', '宅配 Y1000本数',
+        '直販 全社売上', '直販 乳製品売上', '直販 乳製品本数', '直販 Y400売上', '直販 Y400本数', '直販 Y1000売上', '直販 Y1000本数',
+        '全社売上計', '全社乳製品計', '全社乳製品本数'
+    ];
+    const qtyIndices = [2, 4, 6, 9, 11, 13, 16];
+    const createStatObj = () => ({ sums: createZeroStats(), counts: createZeroStats() });
+    const initStats = () => ({ actual: createStatObj(), target: createStatObj(), prev: createStatObj() });
+
+    // Reuse similar logic, simplified for single month
+    const getMonthStats = (monthIndex) => {
+        let stats = initStats();
+        // monthIndex 0 = Apr, 1 = May...
+        const d = new Date(fy, 3 + monthIndex, 1);
+
+        // Always try to fetch actuals regardless of date? 
+        // Or only if d <= baseDate?  User said "Show all months", implies showing empty/zeros for future is fine or expected.
+        const key = Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy_MM');
+
+        // Actuals
+        const totals = getSheetTotals(ss, key);
+        addToStatObj(stats.actual, totals.sums, totals.counts);
+
+        // Target/Prev
+        const countArr = new Array(17).fill(1);
+        const tgtVals = targetMap[key] || createZeroStats();
+        addToStatObj(stats.target, tgtVals, countArr);
+
+        const prevD = new Date(d.getFullYear() - 1, d.getMonth(), 1);
+        const prevKey = Utilities.formatDate(prevD, Session.getScriptTimeZone(), 'yyyy_MM');
+        const prevVals = prevMap[prevKey] || createZeroStats();
+        addToStatObj(stats.prev, prevVals, countArr);
+
+        return stats;
+    };
+
+    const drawBlock = (title, startRow, stats) => {
+        mSheet.getRange(startRow, 1).setValue(title).setFontWeight('bold');
+        const headerRow = ['項目', '実績', '目標', '達成率', '前年実績', '前年比'];
+        mSheet.getRange(startRow + 1, 1, 1, 6).setValues([headerRow]).setBackground('#e0f0ff').setFontWeight('bold');
+
+        const rows = [];
+        for (let i = 0; i < 17; i++) {
+            const isQty = qtyIndices.includes(i);
+            let act = stats.actual.sums[i];
+            let tgt = stats.target.sums[i];
+            let prv = stats.prev.sums[i];
+
+            if (isQty) {
+                const actCount = stats.actual.counts[i];
+                act = actCount > 0 ? act / actCount : 0;
+                const tgtCount = stats.target.counts[i];
+                tgt = tgtCount > 0 ? tgt / tgtCount : 0;
+                const prvCount = stats.prev.counts[i];
+                prv = prvCount > 0 ? prv / prvCount : 0;
+            }
+
+            const rate = tgt ? act / tgt : 0;
+            const yoy = prv ? act / prv : 0;
+            rows.push([metrics[i], act, tgt, rate, prv, yoy]);
+        }
+        mSheet.getRange(startRow + 2, 1, 17, 6).setValues(rows);
+        mSheet.getRange(startRow + 2, 2, 17, 1).setNumberFormat('#,##0');
+        mSheet.getRange(startRow + 2, 3, 17, 1).setNumberFormat('#,##0');
+        mSheet.getRange(startRow + 2, 5, 17, 1).setNumberFormat('#,##0');
+        mSheet.getRange(startRow + 2, 4, 17, 1).setNumberFormat('0.0%');
+        mSheet.getRange(startRow + 2, 6, 17, 1).setNumberFormat('0.0%');
+        return startRow + 20;
+    };
+
+    let r = 5;
+    for (let i = 0; i < 12; i++) {
+        const m = (i + 3) % 12 + 1; // 0->4, 8->12, 9->1
+        const stats = getMonthStats(i);
+        r = drawBlock('【' + m + '月実績】', r, stats);
+    }
+
+    // Clear rest
+    const maxRows = mSheet.getMaxRows();
+    if (r <= maxRows) {
+        mSheet.getRange(r, 1, maxRows - r + 1, mSheet.getLastColumn()).clearContent();
+    }
+    console.log('Monthly Report updated.');
 }
 
 function getMasterValues(ss, sheetName) {
