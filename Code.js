@@ -25,6 +25,7 @@ function onOpen() {
             .addItem('CSVを取り込む（今すぐ実行）', 'importCSV')
             .addItem('マスタデータをCSVから取り込む', 'importMasterData')
             .addItem('サマリーのみ更新', 'updateSummarySheet')
+            .addItem('手動入力用シート作成', 'createEmptyMonthSheetUI')
             .addToUi();
     } catch (e) {
         console.warn('onOpen UI check failed: ' + e.message);
@@ -146,8 +147,8 @@ function createMasterSheet(ss, sheetName, offsetYear) {
     sheet = ss.insertSheet(sheetName);
     const tHeaders = [
         '年月',
-        'S1_全_金', 'S1_乳_金', 'S1_乳_本', 'S1_400_金', 'S1_400_本', 'S1_1000_金', 'S1_1000_本',
-        'S2_全_金', 'S2_乳_金', 'S2_乳_本', 'S2_400_金', 'S2_400_本', 'S2_1000_金', 'S2_1000_本',
+        '宅配_全_金', '宅配_乳_金', '宅配_乳_本', '宅配_400_金', '宅配_400_本', '宅配_1000_金', '宅配_1000_本',
+        '直販_全_金', '直販_乳_金', '直販_乳_本', '直販_400_金', '直販_400_本', '直販_1000_金', '直販_1000_本',
         'R_全社_金', 'S_全乳_金', 'T_全乳_本'
     ];
     sheet.getRange(1, 1, 1, tHeaders.length).setValues([tHeaders]).setFontWeight('bold').setBackground('#c9daf8');
@@ -269,8 +270,8 @@ function createMonthlySheet(ss, sheetName, date) {
     const sheet = ss.insertSheet(sheetName);
     const headers = [
         'Date',
-        'S1_全_金', 'S1_乳_金', 'S1_乳_本', 'S1_400_金', 'S1_400_本', 'S1_1000_金', 'S1_1000_本',
-        'S2_全_金', 'S2_乳_金', 'S2_乳_本', 'S2_400_金', 'S2_400_本', 'S2_1000_金', 'S2_1000_本',
+        '宅配_全_金', '宅配_乳_金', '宅配_乳_本', '宅配_400_金', '宅配_400_本', '宅配_1000_金', '宅配_1000_本',
+        '直販_全_金', '直販_乳_金', '直販_乳_本', '直販_400_金', '直販_400_本', '直販_1000_金', '直販_1000_本',
         'R_全社_金', 'S_全乳_金', 'T_全乳_本'
     ];
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold').setBackground('#ddd');
@@ -291,6 +292,46 @@ function createMonthlySheet(ss, sheetName, date) {
     return sheet;
 }
 
+function createEmptyMonthSheetUI() {
+    const ui = SpreadsheetApp.getUi();
+    const result = ui.prompt('シート作成', '作成する年月を入力してください (例: 2024_04)', ui.ButtonSet.OK_CANCEL);
+
+    if (result.getSelectedButton() == ui.Button.OK) {
+        const sheetName = result.getResponseText().trim();
+        if (!sheetName.match(/^\d{4}_\d{2}$/)) {
+            ui.alert('形式が正しくありません。半角で "YYYY_MM" の形式で入力してください。\n例: 2024_04');
+            return;
+        }
+
+        const ss = getOrCreateSpreadsheet();
+        if (ss.getSheetByName(sheetName)) {
+            ui.alert('シート "' + sheetName + '" は既に存在します。');
+            return;
+        }
+
+        const parts = sheetName.split('_');
+        const date = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, 1);
+
+        createMonthlySheet(ss, sheetName, date);
+        ui.alert('シート "' + sheetName + '" を作成しました。\nデータを貼り付けた後、「サマリーのみ更新」を実行してください。');
+    }
+}
+
+// UIが動かない場合の非常用（コード内の createTarget を書き換えて直接実行してください）
+function forceCreateSheet() {
+    const createTarget = '2024_04'; // ←ここを作りたい年月に書き換える
+
+    const ss = getOrCreateSpreadsheet();
+    if (ss.getSheetByName(createTarget)) {
+        console.log('エラー: シート ' + createTarget + ' は既に存在します。');
+        return;
+    }
+    const parts = createTarget.split('_');
+    const date = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, 1);
+    createMonthlySheet(ss, createTarget, date);
+    console.log('シート ' + createTarget + ' を作成しました。');
+}
+
 function updateSummarySheet() {
     const ss = getOrCreateSpreadsheet();
     const sSheet = ss.getSheetByName(CONFIG.SHEET_SUMMARY);
@@ -302,8 +343,8 @@ function updateSummarySheet() {
     const prevMap = getMasterValues(ss, CONFIG.SHEET_PREV);
 
     const metrics = [
-        'S1 全社売上', 'S1 乳製品売上', 'S1 乳製品本数', 'S1 Y400売上', 'S1 Y400本数', 'S1 Y1000売上', 'S1 Y1000本数',
-        'S2 全社売上', 'S2 乳製品売上', 'S2 乳製品本数', 'S2 Y400売上', 'S2 Y400本数', 'S2 Y1000売上', 'S2 Y1000本数',
+        '宅配 全社売上', '宅配 乳製品売上', '宅配 乳製品本数', '宅配 Y400売上', '宅配 Y400本数', '宅配 Y1000売上', '宅配 Y1000本数',
+        '直販 全社売上', '直販 乳製品売上', '直販 乳製品本数', '直販 Y400売上', '直販 Y400本数', '直販 Y1000売上', '直販 Y1000本数',
         '全社売上計', '全社乳製品計', '全社乳製品本数'
     ];
     // Qty indices for Average calculation
