@@ -9,6 +9,7 @@
 const CONFIG = {
     FOLDER_NAME: '実績CSVアップロード',
     PROCESSED_FOLDER_NAME: 'processed',
+    FOLDER_MONTHLY_FIX: '月次確定CSVアップロード',
     FOLDER_MASTER_IMPORT: 'マスタデータ取込',
     SS_NAME: '全社実績ダッシュボード',
     SHEET_SUMMARY: 'サマリーシート',
@@ -27,6 +28,9 @@ function onOpen() {
             .addItem('マスタデータをCSVから取り込む', 'importMasterData')
             .addItem('サマリーのみ更新', 'updateSummarySheet')
             .addItem('月別レポートのみ更新', 'updateMonthlyReportSheet')
+            .addItem('サマリーのみ更新', 'updateSummarySheet')
+            .addItem('月別レポートのみ更新', 'updateMonthlyReportSheet')
+            .addItem('月次確定データを取り込む', 'importMonthlyFixCSV')
             .addItem('手動入力用シート作成', 'createEmptyMonthSheetUI')
             .addToUi();
     } catch (e) {
@@ -50,8 +54,11 @@ function setup() {
     createMasterSheet(ss, CONFIG.SHEET_TARGET, 0);
     createMasterSheet(ss, CONFIG.SHEET_PREV, -1);
 
+    createMasterSheet(ss, CONFIG.SHEET_PREV, -1);
+
     ensureFolder(CONFIG.FOLDER_NAME);
     ensureFolder(CONFIG.FOLDER_MASTER_IMPORT);
+    ensureFolder(CONFIG.FOLDER_MONTHLY_FIX);
 
     console.log('Setup completed.');
 }
@@ -190,12 +197,12 @@ function importCSV() {
     if (processedAny) updateSummarySheet();
 }
 
-function processFile(file, ss) {
-    console.log('Processing: ' + file.getName());
+// Extracted CSV parsing logic
+function parseCsvToRecord(file) {
     const csvString = file.getBlob().getDataAsString('Shift_JIS');
     const csvData = Utilities.parseCsv(csvString);
     let header = csvData.shift();
-    if (!header) return;
+    if (!header) return null;
     header = header.map(h => h.trim());
 
     const cols = {
@@ -204,13 +211,9 @@ function processFile(file, ss) {
         total: findHeaderIndex(header, ['合　計', '合計']),
         dairy: findHeaderIndex(header, ['乳製品計']),
         y400: findHeaderIndex(header, ['Y400類']),
-        // Expanded fuzzy match for Y1000
         y1000: findHeaderIndex(header, ['Y1000類', 'Yakult1000類', 'Y1000', 'Yakult1000', 'Y1000本'])
     };
-    if (cols.name === -1 || cols.item === -1) return;
-
-    let date = extractDateFromFilename(file.getName());
-    if (!date) date = new Date();
+    if (cols.name === -1 || cols.item === -1) return null;
 
     const record = {
         [CONFIG.NAME_S1]: { amt: {}, qty: {} },
@@ -220,7 +223,7 @@ function processFile(file, ss) {
     csvData.forEach(row => {
         const name = row[cols.name] ? row[cols.name].trim() : '';
         const rawItem = row[cols.item] ? row[cols.item] : '';
-        const item = rawItem.replace(/\s+/g, ''); // Remove spaces
+        const item = rawItem.replace(/\s+/g, '');
 
         if (!record[name]) return;
         let typeKey = null;
@@ -255,8 +258,82 @@ function processFile(file, ss) {
         allTotalAmt, allDairyAmt, allDairyQty
     ];
 
+    return rowValues;
+}
+
+function processFile(file, ss) {
+    console.log('Processing: ' + file.getName());
+    const rowValues = parseCsvToRecord(file);
+    if (!rowValues) return;
+
+    let date = extractDateFromFilename(file.getName());
+    if (!date) date = new Date();
+
     writeToMonthlySheet(ss, date, rowValues);
     moveFileToProcessed(file);
+}
+
+// New: Import Monthly Fix Data
+function importMonthlyFixCSV() {
+    const folders = DriveApp.getFoldersByName(CONFIG.FOLDER_MONTHLY_FIX);
+    if (!folders.hasNext()) return;
+    const folder = folders.next();
+    const files = folder.getFilesByType(MimeType.CSV);
+    const ss = getOrCreateSpreadsheet();
+    let processedAny = false;
+
+    while (files.hasNext()) {
+        try {
+            const file = files.next();
+            console.log('Processing Fix: ' + file.getName());
+            const rowValues = parseCsvToRecord(file);
+            if (!rowValues) continue;
+
+            // Extract YYYYMM
+            const m = file.getName().match(/(\d{4})(\d{2})/);
+            if (!m) {
+                console.log('Skipping file (no YYYYMM match): ' + file.getName());
+                continue;
+            }
+
+            const year = parseInt(m[1], 10);
+            const month = parseInt(m[2], 10);
+            const date = new Date(year, month - 1, 1);
+
+            if (isNaN(date.getTime())) {
+                console.error('Invalid date parsed from: ' + file.getName());
+                continue;
+            }
+
+            overwriteMonthlySheet(ss, date, rowValues);
+            moveFileToProcessed(file);
+            processedAny = true;
+        } catch (e) {
+            console.error('Error: ' + e.message);
+        }
+    }
+    if (processedAny) {
+        updateSummarySheet();
+        updateMonthlyReportSheet();
+        logOrAlert('月次確定取り込みが完了しました。');
+    }
+}
+
+function overwriteMonthlySheet(ss, date, dataArray) {
+    const sheetName = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy_MM');
+    let sheet = ss.getSheetByName(sheetName);
+    if (!sheet) sheet = createMonthlySheet(ss, sheetName, date);
+
+    // Clear B2:R32 (Day 1 to 31)
+    sheet.getRange(2, 1, 31, 18).clearContent();
+    // Re-fill dates
+    const days = [];
+    for (let i = 1; i <= 31; i++) days.push([i]);
+    sheet.getRange(2, 1, 31, 1).setValues(days);
+
+    // Write Fix to Day 1 (Row 2)
+    sheet.getRange(2, 2, 1, 17).setValues([dataArray]);
+    sheet.getRange(2, 1).setValue('確定値');
 }
 
 function writeToMonthlySheet(ss, date, dataArray) {
