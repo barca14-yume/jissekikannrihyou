@@ -16,6 +16,7 @@ const CONFIG = {
     SHEET_MONTHLY_REPORT: '月別レポート',
     SHEET_TARGET: '目標マスター',
     SHEET_PREV: '前年実績マスター',
+    SHEET_DAYS: '稼働日マスター',
     NAME_S1: '営業計',
     NAME_S2: '直販他計'
 };
@@ -52,9 +53,9 @@ function setup() {
     }
 
     createMasterSheet(ss, CONFIG.SHEET_TARGET, 0);
+    createMasterSheet(ss, CONFIG.SHEET_TARGET, 0);
     createMasterSheet(ss, CONFIG.SHEET_PREV, -1);
-
-    createMasterSheet(ss, CONFIG.SHEET_PREV, -1);
+    createWorkingDaysSheet(ss);
 
     ensureFolder(CONFIG.FOLDER_NAME);
     ensureFolder(CONFIG.FOLDER_MASTER_IMPORT);
@@ -90,6 +91,9 @@ function importMasterData() {
             importedCount++;
         } else if (name === 'prev.csv') {
             importMasterCSV(ss, file, CONFIG.SHEET_PREV);
+            importedCount++;
+        } else if (name === 'days.csv') {
+            importDaysCSV(ss, file);
             importedCount++;
         }
     }
@@ -334,15 +338,63 @@ function overwriteMonthlySheet(ss, date, dataArray) {
     // Write Fix to Day 1 (Row 2)
     sheet.getRange(2, 2, 1, 17).setValues([dataArray]);
     sheet.getRange(2, 1).setValue('確定値');
+
+    // Update formulas just in case
+    updateAchievementFormulas(ss, sheet, date);
 }
 
 function writeToMonthlySheet(ss, date, dataArray) {
     const sheetName = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy_MM');
     let sheet = ss.getSheetByName(sheetName);
     if (!sheet) sheet = createMonthlySheet(ss, sheetName, date);
+
+    // Ensure structure is up to date (add S-U if missing, update formulas)
+    updateAchievementFormulas(ss, sheet, date);
+
     const day = date.getDate();
     const row = day + 1;
     if (row <= 32) sheet.getRange(row, 2, 1, dataArray.length).setValues([dataArray]);
+}
+
+function updateAchievementFormulas(ss, sheet, date) {
+    // 1. Ensure Headers
+    const headers = ['S_宅配率', 'T_直販率', 'U_全体率'];
+    sheet.getRange(1, 19, 1, 3).setValues([headers]).setFontWeight('bold').setBackground('#ddd');
+
+    // 2. Fetch Data
+    const key = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy_MM');
+    const targetMap = getMasterValues(ss, CONFIG.SHEET_TARGET);
+    const daysMap = getWorkingDays(ss);
+
+    // 3. Calc Daily Targets
+    let dailyS1 = 0, dailyS2 = 0, dailyTotal = 0;
+
+    if (targetMap[key] && daysMap[key]) {
+        const tVals = targetMap[key];
+        const wDays = daysMap[key];
+
+        const tgtS1 = tVals[0] || 0;
+        const daysS1 = wDays.home || 0;
+        dailyS1 = daysS1 > 0 ? tgtS1 / daysS1 : 0;
+
+        const tgtS2 = tVals[7] || 0;
+        const daysS2 = wDays.direct || 0;
+        const adjS2 = Math.max(0, tgtS2 - 6000000);
+        dailyS2 = daysS2 > 0 ? adjS2 / daysS2 : 0;
+
+        dailyTotal = dailyS1 + dailyS2;
+    }
+
+    // 4. Set Formulas (S2:U31 in general usually, but let's cover 2 to 32 just in case)
+    const formulas = [];
+    for (let i = 0; i < 31; i++) {
+        const r = i + 2;
+        const fS = dailyS1 > 0 ? `=B${r}/${dailyS1}` : '=0';
+        const fT = dailyS2 > 0 ? `=I${r}/${dailyS2}` : '=0';
+        const fU = dailyTotal > 0 ? `=P${r}/${dailyTotal}` : '=0';
+        formulas.push([fS, fT, fU]);
+    }
+    sheet.getRange(2, 19, 31, 3).setFormulas(formulas).setNumberFormat('0.0%');
 }
 
 function createMonthlySheet(ss, sheetName, date) {
@@ -351,7 +403,8 @@ function createMonthlySheet(ss, sheetName, date) {
         'Date',
         '宅配_全_金', '宅配_乳_金', '宅配_乳_本', '宅配_400_金', '宅配_400_本', '宅配_1000_金', '宅配_1000_本',
         '直販_全_金', '直販_乳_金', '直販_乳_本', '直販_400_金', '直販_400_本', '直販_1000_金', '直販_1000_本',
-        'R_全社_金', 'S_全乳_金', 'T_全乳_本'
+        'R_全社_金', 'S_全乳_金', 'T_全乳_本',
+        'S_宅配率', 'T_直販率', 'U_全体率'
     ];
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold').setBackground('#ddd');
 
@@ -359,15 +412,17 @@ function createMonthlySheet(ss, sheetName, date) {
     for (let i = 1; i <= 31; i++) days.push([i]);
     sheet.getRange(2, 1, 31, 1).setValues(days);
 
+    updateAchievementFormulas(ss, sheet, date);
+
     sheet.getRange(33, 1).setValue('月計・平均').setFontWeight('bold');
 
     const qtyIndices = [2, 4, 6, 9, 11, 13, 16];
-    const formulas = [];
+    const footerFormulas = [];
     for (let i = 0; i < 17; i++) {
-        if (qtyIndices.includes(i)) formulas.push('=AVERAGE(R[-31]C:R[-1]C)');
-        else formulas.push('=SUM(R[-31]C:R[-1]C)');
+        if (qtyIndices.includes(i)) footerFormulas.push('=AVERAGE(R[-31]C:R[-1]C)');
+        else footerFormulas.push('=SUM(R[-31]C:R[-1]C)');
     }
-    sheet.getRange(33, 2, 1, 17).setFormulasR1C1([formulas]).setFontWeight('bold').setBackground('#fff0f0');
+    sheet.getRange(33, 2, 1, 17).setFormulasR1C1([footerFormulas]).setFontWeight('bold').setBackground('#fff0f0');
     return sheet;
 }
 
@@ -692,6 +747,75 @@ function getSheetTotals(ss, sheetName) {
         }
     }
     return { sums, counts };
+}
+
+// Working Days Map: { 'yyyy_MM': { home: 20, direct: 22 } }
+function getWorkingDays(ss) {
+    const sheet = ss.getSheetByName(CONFIG.SHEET_DAYS);
+    if (!sheet) return {};
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return {};
+
+    // Format: A:Month, B:Home, C:Direct
+    const data = sheet.getRange(2, 1, lastRow - 1, 3).getValues();
+    const map = {};
+    data.forEach(row => {
+        if (!row[0]) return;
+        const d = new Date(row[0]);
+        const key = Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy_MM');
+        map[key] = {
+            home: Number(row[1]) || 0,
+            direct: Number(row[2]) || 0
+        };
+    });
+    return map;
+}
+
+function createWorkingDaysSheet(ss) {
+    let sheet = ss.getSheetByName(CONFIG.SHEET_DAYS);
+    if (sheet) return;
+
+    sheet = ss.insertSheet(CONFIG.SHEET_DAYS);
+    sheet.getRange(1, 1, 1, 3).setValues([['年月', '稼働日_宅配', '稼働日_直販']]).setFontWeight('bold').setBackground('#c9daf8');
+
+    const today = new Date();
+    const fy = getFiscalYear(today);
+    const rows = [];
+    for (let i = 0; i < 12; i++) {
+        const d = new Date(fy, 3 + i, 1);
+        rows.push([d, 0, 0]);
+    }
+    sheet.getRange(2, 1, 12, 3).setValues(rows);
+    sheet.getRange('A:A').setNumberFormat('yyyy/MM');
+    sheet.setColumnWidth(1, 100);
+}
+
+function importDaysCSV(ss, file) {
+    if (!ss) return;
+    const sheet = ss.getSheetByName(CONFIG.SHEET_DAYS);
+    if (!sheet) return;
+
+    const csvString = file.getBlob().getDataAsString('Shift_JIS');
+    const data = Utilities.parseCsv(csvString);
+    let startRow = 0;
+    if (data.length > 0 && isNaN(Date.parse(data[0][0]))) startRow = 1;
+
+    const rows = [];
+    for (let i = startRow; i < data.length; i++) {
+        const row = data[i];
+        if (row.length < 3) continue;
+        const d = new Date(row[0]);
+        if (isNaN(d.getTime())) continue;
+        rows.push([d, row[1], row[2]]); // Date, Home, Direct
+    }
+
+    if (rows.length === 0) return;
+
+    // Simple overwrite logic for now, or match/replace?
+    // Let's clear and overwrite for simplicity as it's a master import
+    if (sheet.getLastRow() >= 2) sheet.getRange(2, 1, sheet.getLastRow() - 1, 3).clearContent();
+    sheet.getRange(2, 1, rows.length, 3).setValues(rows);
+    console.log('Imported Working Days.');
 }
 
 function createZeroStats() { return new Array(17).fill(0); }
