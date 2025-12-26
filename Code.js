@@ -198,7 +198,10 @@ function importCSV() {
             console.error('Error: ' + e.message);
         }
     }
-    if (processedAny) updateSummarySheet();
+    if (processedAny) {
+        updateSummarySheet();
+        updateMonthlyReportSheet();
+    }
 }
 
 // Extracted CSV parsing logic
@@ -471,6 +474,7 @@ function updateSummarySheet() {
     const sSheet = ss.getSheetByName(CONFIG.SHEET_SUMMARY);
     if (!sSheet) return;
 
+    sSheet.getRange('B3').setValue(new Date());
     const baseDate = new Date(sSheet.getRange('B3').getValue());
     const fy = getFiscalYear(baseDate);
     const targetMap = getMasterValues(ss, CONFIG.SHEET_TARGET);
