@@ -218,7 +218,7 @@ function parseCsvToRecord(file) {
         total: findHeaderIndex(header, ['合　計', '合計']),
         dairy: findHeaderIndex(header, ['乳製品計']),
         y400: findHeaderIndex(header, ['Y400類']),
-        y1000: findHeaderIndex(header, ['Y1000類', 'Yakult1000類', 'Y1000', 'Yakult1000', 'Y1000本'])
+        y1000: findHeaderIndex(header, ['yakult1000類', 'yakult1000', 'Yakult1000類', 'Y1000類', 'Y1000', 'Yakult1000', 'Y1000本', 'ｙａｋｕｌｔ１０００類', 'Ｙ１０００類', 'Ｙ１０００', 'Ｙａｋｕｌｔ１０００類'])
     };
     if (cols.name === -1 || cols.item === -1) return null;
 
