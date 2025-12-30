@@ -218,7 +218,10 @@ function parseCsvToRecord(file) {
         total: findHeaderIndex(header, ['合　計', '合計']),
         dairy: findHeaderIndex(header, ['乳製品計']),
         y400: findHeaderIndex(header, ['Y400類']),
-        y1000: findHeaderIndex(header, ['yakult1000類', 'yakult1000', 'Yakult1000類', 'Y1000類', 'Y1000', 'Yakult1000', 'Y1000本', 'ｙａｋｕｌｔ１０００類', 'Ｙ１０００類', 'Ｙ１０００', 'Ｙａｋｕｌｔ１０００類'])
+        // 宅配用: yakult1000類 (小文字) 優先
+        y1000_home: findHeaderIndex(header, ['yakult1000類', 'yakult1000', 'Yakult1000類', 'Y1000類', 'Y1000', 'Yakult1000', 'Y1000本', 'ｙａｋｕｌｔ１０００類', 'Ｙ１０００類', 'Ｙ１０００', 'Ｙａｋｕｌｔ１０００類']),
+        // 直販用: 従来通り (Y1000類, Yakult1000類...) 優先
+        y1000_direct: findHeaderIndex(header, ['Y1000類', 'Yakult1000類', 'Y1000', 'Yakult1000', 'Y1000本', 'yakult1000類'])
     };
     if (cols.name === -1 || cols.item === -1) return null;
 
@@ -242,7 +245,13 @@ function parseCsvToRecord(file) {
             t.total = parseNumber(row[cols.total]);
             t.dairy = parseNumber(row[cols.dairy]);
             t.y400 = parseNumber(row[cols.y400]);
-            t.y1000 = parseNumber(row[cols.y1000]);
+
+            // Switch Y1000 column based on name (Home vs Direct)
+            if (name === CONFIG.NAME_S1) {
+                t.y1000 = parseNumber(row[cols.y1000_home]);
+            } else {
+                t.y1000 = parseNumber(row[cols.y1000_direct]);
+            }
         }
     });
 
