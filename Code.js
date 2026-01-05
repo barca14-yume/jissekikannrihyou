@@ -33,6 +33,7 @@ function onOpen() {
             .addItem('月別レポートのみ更新', 'updateMonthlyReportSheet')
             .addItem('月次確定データを取り込む', 'importMonthlyFixCSV')
             .addItem('手動入力用シート作成', 'createEmptyMonthSheetUI')
+            .addItem('年度末着地予測作成', 'generateForecastSheet')
             .addToUi();
     } catch (e) {
         console.warn('onOpen UI check failed: ' + e.message);
@@ -868,4 +869,228 @@ function moveFileToProcessed(f) {
 function ensureFolder(name) {
     const fs = DriveApp.getFoldersByName(name);
     if (!fs.hasNext()) DriveApp.createFolder(name);
+}
+
+function generateForecastSheet() {
+    const ss = getOrCreateSpreadsheet();
+    const sheetName = '年度末着地予測';
+    let sheet = ss.getSheetByName(sheetName);
+    if (sheet) {
+        sheet.clear();
+    } else {
+        sheet = ss.insertSheet(sheetName);
+    }
+
+    const headers = [
+        '項目',
+        '確定実績\n(金額:計 / 本数:平)',
+        '予測ベース\n(直近3ヶ月平均)',
+        '予測\n(今月~3月)',
+        '着地予測\n(年間着地)',
+        '年間目標\n(金額:計 / 本数:平)',
+        '達成率(予測)'
+    ];
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers])
+        .setFontWeight('bold')
+        .setBackground('#fff2cc')
+        .setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
+
+    const baseDate = new Date();
+    const currentFY = getFiscalYear(baseDate);
+    // BaseDate actually defines "Until Last Month" for Confirmed logic
+    const stats = calculateForecastStats(ss, baseDate, currentFY);
+
+    const metrics = [
+        '宅配 全社売上', '宅配 乳製品売上', '宅配 乳製品本数', '宅配 Y400売上', '宅配 Y400本数', '宅配 Y1000売上', '宅配 Y1000本数',
+        '直販 全社売上', '直販 乳製品売上', '直販 乳製品本数', '直販 Y400売上', '直販 Y400本数', '直販 Y1000売上', '直販 Y1000本数',
+        '全社売上計', '全社乳製品計', '全社乳製品本数'
+    ];
+    // Qty indices
+    const qtyIndices = [2, 4, 6, 9, 11, 13, 16];
+
+    const rows = [];
+    for (let i = 0; i < 17; i++) {
+        const isQty = qtyIndices.includes(i);
+
+        let confirmed, avg3mo, prediction, landing, target;
+
+        // Common Data
+        const confirmedSum = stats.confirmed.sums[i] || 0;
+        const avg3moSum = stats.avg3mo.sums[i] || 0;
+        const annualTargetSum = stats.annualTarget.sums[i] || 0;
+
+        // Days Data
+        const confirmedDays = stats.confirmedDays;
+        const avg3moDays = stats.avg3moDays;
+        const remainingMonths = stats.remainingMonths;
+        // Approx remaining days for Qty prediction (Current Month to Mar)
+        // Simplified: remainingMonths * 30.4 or calculate exactly?
+        // Let's use the stats.remainingDays which calculates exactly.
+        const remainingDays = stats.remainingDays;
+        const totalYearDays = confirmedDays + remainingDays;
+
+        if (isQty) {
+            // --- QUANTITY (Average) ---
+            // Confirmed: Daily Average over confirmed period
+            confirmed = confirmedDays > 0 ? confirmedSum / confirmedDays : 0;
+
+            // Prediction Base: Daily Average over last 3 months
+            const baseDailyAvg = avg3moDays > 0 ? avg3moSum / avg3moDays : 0;
+            avg3mo = baseDailyAvg;
+
+            // Forecast (Future): Just the same daily average
+            prediction = baseDailyAvg;
+
+            // Landing: Weighted Average for the whole year
+            // (ConfirmedTotal + PredictedTotal) / TotalDays
+            const predictedTotal = baseDailyAvg * remainingDays;
+            landing = totalYearDays > 0 ? (confirmedSum + predictedTotal) / totalYearDays : 0;
+
+            // Annual Target: Average of Monthly Averages
+            // Target CSV values are Daily Averages.
+            // Annual Average Target = (Sum of Daily Averages) / 12 ... Wait, 
+            // if target.csv has "Daily Average" for each month:
+            // The conceptual "Annual Average" is the average of those 12 months.
+            // So Sum(Months) / 12.
+            // Note: annualTargetSum contains Sum of Daily Averages (because we summed them in loop).
+            target = annualTargetSum / 12;
+
+        } else {
+            // --- AMOUNT (Sum) ---
+            confirmed = confirmedSum;
+
+            // Prediction Base: Monthly Average
+            // avg3moSum is currently the SUM of 3 months. We need Average = Sum / Count.
+            const count3mo = stats.count3mo > 0 ? stats.count3mo : 1;
+            avg3mo = avg3moSum / count3mo;
+
+            // Forecast: Monthly Avg * Remaining Months
+            prediction = avg3mo * remainingMonths;
+
+            // Landing: Confirmed + Forecast
+            landing = confirmed + prediction;
+
+            // Annual Target: Sum
+            target = annualTargetSum;
+        }
+
+        const rate = target ? landing / target : 0;
+
+        rows.push([
+            metrics[i],
+            confirmed,
+            avg3mo,
+            prediction,
+            landing,
+            target,
+            rate
+        ]);
+    }
+
+    sheet.getRange(2, 1, 17, 7).setValues(rows);
+
+    // Formatting
+    sheet.getRange(2, 2, 17, 5).setNumberFormat('#,##0');
+    sheet.getRange(2, 7, 17, 1).setNumberFormat('0.0%');
+    sheet.setColumnWidth(1, 160);
+    sheet.setColumnWidths(2, 6, 110);
+
+    console.log('Forecast sheet generated (Mixed Qty/Amt).');
+}
+
+function calculateForecastStats(ss, baseDate, fy) {
+    const today = new Date(baseDate);
+    const currentMonthDate = new Date(today.getFullYear(), today.getMonth(), 1);
+
+    const confirmedSums = createZeroStats();
+    const annualTargetSums = createZeroStats();
+    let confirmedDays = 0;
+    let remainingMonths = 0;
+    let remainingDays = 0;
+
+    const targetMap = getMasterValues(ss, CONFIG.SHEET_TARGET);
+
+    // 1. Walk through the Fiscal Year
+    for (let i = 0; i < 12; i++) {
+        const d = new Date(fy, 3 + i, 1);
+        const key = Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy_MM');
+        const daysInMonth = new Date(fy, 3 + i + 1, 0).getDate();
+
+        // Accumulate Annual Target
+        // For Amt: Target is Monthly Total. Sum is correct.
+        // For Qty: Target is Daily Average. Summing gives "Sum of Daily Averages". 
+        // We will divide by 12 later for Qty to get Annual Daily Average.
+        const tVals = targetMap[key] || createZeroStats();
+        addToStatObj({ sums: annualTargetSums, counts: [] }, tVals, []);
+
+        if (d < currentMonthDate) {
+            // Confirmed (Past)
+            const totals = getSheetTotals(ss, key);
+            // Totals.sums for Qty is "Daily Average * Days" i.e. Total Qty?
+            // No, getSheetTotals returns SUM of column. 
+            // The column in Monthly Sheet (K,M etc) contains NUMBERS (Total).
+            // So confirmedSums will have Total Qty. CORRECT.
+            addToStatObj({ sums: confirmedSums, counts: [] }, totals.sums, []);
+            confirmedDays += daysInMonth;
+        } else {
+            // Future
+            remainingMonths++;
+            remainingDays += daysInMonth;
+        }
+    }
+
+    // 2. Calculate 3-Month Data
+    const sum3mo = createZeroStats();
+    let countMonthsFound = 0;
+    let days3mo = 0;
+
+    for (let k = 1; k <= 3; k++) {
+        const d = new Date(currentMonthDate.getFullYear(), currentMonthDate.getMonth() - k, 1);
+        const key = Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy_MM');
+        const daysInM = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+
+        const sheet = ss.getSheetByName(key);
+        if (sheet) {
+            const totals = getSheetTotals(ss, key);
+            addToStatObj({ sums: sum3mo, counts: [] }, totals.sums, []);
+            countMonthsFound++;
+            days3mo += daysInM;
+        }
+    }
+
+    // Prepare avg3mo
+    // For Amt: Return Monthly Average (Sum / Count)
+    // For Qty: Return Total Sum (we will divide by days3mo in generate function)
+    const avg3moSums = createZeroStats();
+    if (countMonthsFound > 0) {
+        for (let i = 0; i < 17; i++) {
+            // We store the raw SUM for 3 months here? 
+            // Better to return Monthly Average for Amt, but for equality...
+            // Let's return Monthly Average for everything here to be consistent with previous logic?
+            // Wait, previous logic was: avg3moSums[i] = sum3mo[i] / countMonthsFound;
+            // This is "Monthly Average Total". 
+            // Multiplied by remainingMonths works for Amt.
+            // For Qty, we need Daily Average. 
+            // Daily Average = (Monthly Average Total * countMonths? No)
+            // Daily Avg = (Sum 3mo) / (Days 3mo).
+            // (Sum 3mo) = (Monthly Avg Total * countMonths).
+            // So we can recover it if we pass countMonths, OR we just pass the Raw Sum 3mo.
+
+            // Let's pass the "Monthly Average" as before, but ALSO pass sum3mo raw in a new prop if needed?
+            // No, let's keep it simple. Let's return the Sum of 3 Months.
+            // The Generate function can divide by 3 for Amt, and divide by days3mo for Qty.
+            avg3moSums[i] = sum3mo[i];
+        }
+    }
+
+    return {
+        confirmed: { sums: confirmedSums },
+        annualTarget: { sums: annualTargetSums },
+        avg3mo: { sums: avg3moSums }, // THIS IS NOW RAW SUM of 3 months
+        remainingMonths: remainingMonths,
+        confirmedDays: confirmedDays,
+        remainingDays: remainingDays,
+        avg3moDays: days3mo,
+        count3mo: countMonthsFound
+    };
 }
