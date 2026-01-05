@@ -465,7 +465,7 @@ function createEmptyMonthSheetUI() {
 
 // UIが動かない場合の非常用（コード内の createTarget を書き換えて直接実行してください）
 function forceCreateSheet() {
-    const createTarget = '2024_04'; // ←ここを作りたい年月に書き換える
+    const createTarget = '2026_01'; // ←ここを作りたい年月に書き換える
 
     const ss = getOrCreateSpreadsheet();
     if (ss.getSheetByName(createTarget)) {
@@ -507,8 +507,20 @@ function updateSummarySheet() {
             const mOffset = startMonthIndex + i;
             const d = new Date(fy, 3 + mOffset, 1);
 
+            const key = Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy_MM');
+            const countArr = new Array(17).fill(1); // Count as 1 month
+
+            // Target/Prev: Always accumulate for the Full Period
+            const tgtVals = targetMap[key] || createZeroStats();
+            addToStatObj(stats.target, tgtVals, countArr);
+
+            const prevD = new Date(d.getFullYear() - 1, d.getMonth(), 1);
+            const prevKey = Utilities.formatDate(prevD, Session.getScriptTimeZone(), 'yyyy_MM');
+            const prevVals = prevMap[prevKey] || createZeroStats();
+            addToStatObj(stats.prev, prevVals, countArr);
+
+            // Actuals: Only if date is past/current
             if (d <= baseDate) {
-                const key = Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy_MM');
                 const totals = getSheetTotals(ss, key); // Returns {sums, counts}
 
                 // Change: Use total days of month for Qty counts, not data counts
@@ -517,18 +529,6 @@ function updateSummarySheet() {
 
                 // Actuals: Accumulate Sum and Count of valid days (for calculating Daily Average)
                 addToStatObj(stats.actual, totals.sums, totals.counts);
-
-                // Target/Prev: Values are ALREADY Monthly Averages (for Qty) or Totals (for Amt).
-                // For Qty Average over Quarter/Year: We sum the Monthly Averages and divide by Month Count.
-                // For Amt Total: We just sum.
-                const tgtVals = targetMap[key] || createZeroStats();
-                const countArr = new Array(17).fill(1); // Count as 1 month
-                addToStatObj(stats.target, tgtVals, countArr);
-
-                const prevD = new Date(d.getFullYear() - 1, d.getMonth(), 1);
-                const prevKey = Utilities.formatDate(prevD, Session.getScriptTimeZone(), 'yyyy_MM');
-                const prevVals = prevMap[prevKey] || createZeroStats();
-                addToStatObj(stats.prev, prevVals, countArr);
             }
         }
         return stats;
