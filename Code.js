@@ -34,6 +34,8 @@ function onOpen() {
             .addItem('月次確定データを取り込む', 'importMonthlyFixCSV')
             .addItem('手動入力用シート作成', 'createEmptyMonthSheetUI')
             .addItem('年度末着地予測作成', 'generateForecastSheet')
+            .addSeparator()
+            .addItem('今月の計算式を更新', 'forceUpdateCurrentMonthFormulas')
             .addToUi();
     } catch (e) {
         console.warn('onOpen UI check failed: ' + e.message);
@@ -392,7 +394,8 @@ function updateAchievementFormulas(ss, sheet, date) {
 
         const tgtS2 = tVals[7] || 0;
         const daysS2 = wDays.direct || 0;
-        const adjS2 = Math.max(0, tgtS2 - 6000000);
+        // ユーザー要望: 月末に一括計上される約600万円(単位:千円 -> 6000)を除外
+        const adjS2 = Math.max(0, tgtS2 - 6000);
         dailyS2 = daysS2 > 0 ? adjS2 / daysS2 : 0;
 
         dailyTotal = dailyS1 + dailyS2;
@@ -1094,3 +1097,20 @@ function calculateForecastStats(ss, baseDate, fy) {
         count3mo: countMonthsFound
     };
 }
+
+// 手動実行用：今月のシートの計算式を強制更新する関数
+function forceUpdateCurrentMonthFormulas() {
+    const ss = getOrCreateSpreadsheet();
+    const today = new Date();
+    const sheetName = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy_MM');
+    const sheet = ss.getSheetByName(sheetName);
+
+    if (sheet) {
+        updateAchievementFormulas(ss, sheet, today);
+        console.log(sheetName + ' シートの目標値・進捗率計算式を更新しました。');
+        try { SpreadsheetApp.getUi().alert(sheetName + ' シートの目標値・進捗率計算式を更新しました。'); } catch (e) { }
+    } else {
+        console.warn('シート ' + sheetName + ' が見つかりませんでした。');
+        try { SpreadsheetApp.getUi().alert('シート ' + sheetName + ' が見つかりませんでした。'); } catch (e) { }
+    }
+};
