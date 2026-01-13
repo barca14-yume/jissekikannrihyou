@@ -342,16 +342,34 @@ function overwriteMonthlySheet(ss, date, dataArray) {
     const sheetName = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy_MM');
     let sheet = ss.getSheetByName(sheetName);
     if (!sheet) sheet = createMonthlySheet(ss, sheetName, date);
+    // Ensure structure (migrations)
+    ensureSheetStructure(ss, sheet, date);
 
-    // Clear B2:R32 (Day 1 to 31)
-    sheet.getRange(2, 1, 31, 18).clearContent();
-    // Re-fill dates
+    // Clear B2:S32 (Day 1 to 31) -> Now 19 columns including Weekday? 
+    // Data is 17 cols. Day+Week is 2 cols. Total 19 cols of "Input" area? 
+    // Achievement is 3 cols. Total 22 cols.
+    // Clear range: from 1 to 19? 
+    // We want to clear Date(A), Week(B), Data(C-S).
+    sheet.getRange(2, 1, 31, 19).clearContent();
+
+    // Re-fill dates and weekdays
     const days = [];
-    for (let i = 1; i <= 31; i++) days.push([i]);
-    sheet.getRange(2, 1, 31, 1).setValues(days);
+    const weekDays = ['日', '月', '火', '水', '木', '金', '土'];
+    const year = date.getFullYear();
+    const month = date.getMonth(); // 0-indexed
+    for (let i = 1; i <= 31; i++) {
+        const d = new Date(year, month, i);
+        // Check valid month (handle Feb etc)
+        if (d.getMonth() !== month) {
+            days.push([i, '']);
+        } else {
+            days.push([i, weekDays[d.getDay()]]);
+        }
+    }
+    sheet.getRange(2, 1, 31, 2).setValues(days);
 
-    // Write Fix to Day 1 (Row 2)
-    sheet.getRange(2, 2, 1, 17).setValues([dataArray]);
+    // Write Fix to Day 1 (Row 2, Col 3)
+    sheet.getRange(2, 3, 1, 17).setValues([dataArray]);
     sheet.getRange(2, 1).setValue('確定値');
 
     // Update formulas just in case
@@ -363,18 +381,21 @@ function writeToMonthlySheet(ss, date, dataArray) {
     let sheet = ss.getSheetByName(sheetName);
     if (!sheet) sheet = createMonthlySheet(ss, sheetName, date);
 
+    ensureSheetStructure(ss, sheet, date);
+
     // Ensure structure is up to date (add S-U if missing, update formulas)
     updateAchievementFormulas(ss, sheet, date);
 
     const day = date.getDate();
     const row = day + 1;
-    if (row <= 32) sheet.getRange(row, 2, 1, dataArray.length).setValues([dataArray]);
+    // Write starting at Column 3 (C)
+    if (row <= 32) sheet.getRange(row, 3, 1, dataArray.length).setValues([dataArray]);
 }
 
 function updateAchievementFormulas(ss, sheet, date) {
-    // 1. Ensure Headers
+    // 1. Ensure Headers (Shifted to Col 20)
     const headers = ['S_宅配率', 'T_直販率', 'U_全体率'];
-    sheet.getRange(1, 19, 1, 3).setValues([headers]).setFontWeight('bold').setBackground('#ddd');
+    sheet.getRange(1, 20, 1, 3).setValues([headers]).setFontWeight('bold').setBackground('#ddd');
 
     // 2. Fetch Data
     const key = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy_MM');
@@ -382,41 +403,89 @@ function updateAchievementFormulas(ss, sheet, date) {
     const daysMap = getWorkingDays(ss);
 
     // 3. Calc Daily Targets
-    let dailyS1 = 0, dailyS2 = 0, dailyTotal = 0;
+    let dailyS1 = 0;
+    // For S2 (Direct), we will use an array of daily targets
+    const dailyS2Targets = {}; // Key: day (1..31), Value: targetAmount
+    let dailyTotal = 0; // NOT CONSTANT anymore if S2 varies
 
     if (targetMap[key] && daysMap[key]) {
         const tVals = targetMap[key];
         const wDays = daysMap[key];
 
+        // --- S1: Home Delivery (Average) ---
         const tgtS1 = tVals[0] || 0;
         const daysS1 = wDays.home || 0;
         dailyS1 = daysS1 > 0 ? tgtS1 / daysS1 : 0;
 
+        // --- S2: Direct Sales (Weighted by Weekday) ---
         const tgtS2 = tVals[7] || 0;
-        const daysS2 = wDays.direct || 0;
-        // ユーザー要望: 月末に一括計上される約600万円(単位:千円 -> 6000)を除外
-        const adjS2 = Math.max(0, tgtS2 - 6000);
-        dailyS2 = daysS2 > 0 ? adjS2 / daysS2 : 0;
+        // Adjusted Monthly Target (excluding 6000k lump sum)
+        const adjTgtS2 = Math.max(0, tgtS2 - 6000);
 
-        dailyTotal = dailyS1 + dailyS2;
+        // Weekday Weights (Mon-Sat, Sun=0)
+        // Order in Data: Sun, Mon, Tue, Wed, Thu, Fri, Sat
+        // Shares: Mon:14.9, Tue:18.4, Wed:10.4, Thu:15.3, Fri:20.9, Sat:20.1
+        // Sun is typically 0 for Direct Sales? User said "Mon to Sat". Assuming Sun=0.
+        const weekdayShares = [0, 14.9, 18.4, 10.4, 15.3, 20.9, 20.1];
+
+        // 1. Count occurrences of each weekday in this month
+        // We need to know which days are valid working days? 
+        // User logic implies "1 week = 100".
+        // We should distribute `adjTgtS2` based on the sum of weights for the AVAILABLE days in the month.
+
+        const year = date.getFullYear();
+        const month = date.getMonth();
+        const lastDay = new Date(year, month + 1, 0).getDate();
+
+        let totalWeight = 0;
+        const dayWeights = []; // Index 1..31
+
+        for (let d = 1; d <= 31; d++) {
+            if (d > lastDay) {
+                dayWeights[d] = 0;
+                continue;
+            }
+            const dt = new Date(year, month, d);
+            const wd = dt.getDay(); // 0=Sun, 6=Sat
+            const w = weekdayShares[wd] || 0;
+            dayWeights[d] = w;
+            totalWeight += w;
+        }
+
+        // Calculate Unit Value (Target Amount per Weight Point)
+        const unitValue = totalWeight > 0 ? adjTgtS2 / totalWeight : 0;
+
+        for (let d = 1; d <= 31; d++) {
+            dailyS2Targets[d] = dayWeights[d] * unitValue;
+        }
     }
 
-    // 4. Set Formulas (S2:U31 in general usually, but let's cover 2 to 32 just in case)
+    // 4. Set Formulas (S2:U31 shifted to T2:V31)
     const formulas = [];
     for (let i = 0; i < 31; i++) {
+        const d = i + 1;
         const r = i + 2;
-        const fS = dailyS1 > 0 ? `=B${r}/${dailyS1}` : '=0';
-        const fT = dailyS2 > 0 ? `=I${r}/${dailyS2}` : '=0';
-        const fU = dailyTotal > 0 ? `=P${r}/${dailyTotal}` : '=0';
+
+        // S1 Target (Constant)
+        const fS = dailyS1 > 0 ? `=C${r}/${dailyS1}` : '=0';
+
+        // S2 Target (Variable)
+        const targetS2 = dailyS2Targets[d] || 0;
+        const fT = targetS2 > 0 ? `=J${r}/${targetS2}` : '=0';
+
+        // Total Target (S1 + S2)
+        const totalTarget = dailyS1 + targetS2;
+        const fU = totalTarget > 0 ? `=Q${r}/${totalTarget}` : '=0';
+
         formulas.push([fS, fT, fU]);
     }
-    sheet.getRange(2, 19, 31, 3).setFormulas(formulas).setNumberFormat('0.0%');
+    sheet.getRange(2, 20, 31, 3).setFormulas(formulas).setNumberFormat('0.0%');
 }
 
 function createMonthlySheet(ss, sheetName, date) {
     const sheet = ss.insertSheet(sheetName);
     const headers = [
-        'Date',
+        'Date', '曜日',
         '宅配_全_金', '宅配_乳_金', '宅配_乳_本', '宅配_400_金', '宅配_400_本', '宅配_1000_金', '宅配_1000_本',
         '直販_全_金', '直販_乳_金', '直販_乳_本', '直販_400_金', '直販_400_本', '直販_1000_金', '直販_1000_本',
         'R_全社_金', 'S_全乳_金', 'T_全乳_本',
@@ -425,8 +494,18 @@ function createMonthlySheet(ss, sheetName, date) {
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold').setBackground('#ddd');
 
     const days = [];
-    for (let i = 1; i <= 31; i++) days.push([i]);
-    sheet.getRange(2, 1, 31, 1).setValues(days);
+    const weekDays = ['日', '月', '火', '水', '木', '金', '土'];
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    for (let i = 1; i <= 31; i++) {
+        const d = new Date(year, month, i);
+        if (d.getMonth() !== month) {
+            days.push([i, '']);
+        } else {
+            days.push([i, weekDays[d.getDay()]]);
+        }
+    }
+    sheet.getRange(2, 1, 31, 2).setValues(days);
 
     updateAchievementFormulas(ss, sheet, date);
 
@@ -438,7 +517,8 @@ function createMonthlySheet(ss, sheetName, date) {
         if (qtyIndices.includes(i)) footerFormulas.push('=AVERAGE(R[-31]C:R[-1]C)');
         else footerFormulas.push('=SUM(R[-31]C:R[-1]C)');
     }
-    sheet.getRange(33, 2, 1, 17).setFormulasR1C1([footerFormulas]).setFontWeight('bold').setBackground('#fff0f0');
+    // Formulas shifted to start at Col 3 (C)
+    sheet.getRange(33, 3, 1, 17).setFormulasR1C1([footerFormulas]).setFontWeight('bold').setBackground('#fff0f0');
     return sheet;
 }
 
@@ -748,7 +828,8 @@ function getSheetTotals(ss, sheetName) {
     const sheet = ss.getSheetByName(sheetName);
     if (!sheet) return { sums: createZeroStats(), counts: createZeroStats() }; // Empty stats
 
-    const data = sheet.getRange(2, 2, 31, 17).getValues();
+    // Read Data from Col 3 (C) instead of 2 (B)
+    const data = sheet.getRange(2, 3, 31, 17).getValues();
     const sums = createZeroStats();
     const counts = createZeroStats();
 
@@ -1098,6 +1179,47 @@ function calculateForecastStats(ss, baseDate, fy) {
     };
 }
 
+// Structure check/fix
+function ensureSheetStructure(ss, sheet, date) {
+    const b1 = sheet.getRange('B1').getValue();
+    if (b1 !== '曜日') {
+        console.log('Migrating sheet structure: ' + sheet.getName());
+        sheet.insertColumnAfter(1); // Insert B
+        sheet.getRange('B1').setValue('曜日').setFontWeight('bold').setBackground('#ddd');
+
+        // Fill Weekdays
+        const days = [];
+        const weekDays = ['日', '月', '火', '水', '木', '金', '土'];
+        const year = date.getFullYear();
+        const month = date.getMonth();
+        for (let i = 1; i <= 31; i++) {
+            const d = new Date(year, month, i);
+            if (d.getMonth() !== month) days.push(['']);
+            else days.push([weekDays[d.getDay()]]);
+        }
+        sheet.getRange(2, 2, 31, 1).setValues(days);
+
+        // Update Headers (A1:V1)
+        const headers = [
+            'Date', '曜日',
+            '宅配_全_金', '宅配_乳_金', '宅配_乳_本', '宅配_400_金', '宅配_400_本', '宅配_1000_金', '宅配_1000_本',
+            '直販_全_金', '直販_乳_金', '直販_乳_本', '直販_400_金', '直販_400_本', '直販_1000_金', '直販_1000_本',
+            'R_全社_金', 'S_全乳_金', 'T_全乳_本',
+            'S_宅配率', 'T_直販率', 'U_全体率'
+        ];
+        sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+
+        // Update footer range references
+        const qtyIndices = [2, 4, 6, 9, 11, 13, 16];
+        const footerFormulas = [];
+        for (let i = 0; i < 17; i++) {
+            if (qtyIndices.includes(i)) footerFormulas.push('=AVERAGE(R[-31]C:R[-1]C)');
+            else footerFormulas.push('=SUM(R[-31]C:R[-1]C)');
+        }
+        sheet.getRange(33, 3, 1, 17).setFormulasR1C1([footerFormulas]).setFontWeight('bold').setBackground('#fff0f0');
+    }
+}
+
 // 手動実行用：今月のシートの計算式を強制更新する関数
 function forceUpdateCurrentMonthFormulas() {
     const ss = getOrCreateSpreadsheet();
@@ -1106,6 +1228,7 @@ function forceUpdateCurrentMonthFormulas() {
     const sheet = ss.getSheetByName(sheetName);
 
     if (sheet) {
+        ensureSheetStructure(ss, sheet, today);
         updateAchievementFormulas(ss, sheet, today);
         console.log(sheetName + ' シートの目標値・進捗率計算式を更新しました。');
         try { SpreadsheetApp.getUi().alert(sheetName + ' シートの目標値・進捗率計算式を更新しました。'); } catch (e) { }
