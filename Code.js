@@ -25,16 +25,16 @@ function onOpen() {
     try {
         const ui = SpreadsheetApp.getUi();
         ui.createMenu('ダッシュボード管理')
-            .addItem('CSVを取り込む（今すぐ実行）', 'importCSV')
-            .addItem('マスタデータをCSVから取り込む', 'importMasterData')
-            .addItem('サマリーのみ更新', 'updateSummarySheet')
-            .addItem('月別レポートのみ更新', 'updateMonthlyReportSheet')
-            .addItem('月次確定データを取り込む', 'importMonthlyFixCSV')
-            .addItem('翌月のシートを作成', 'createNextMonthSheetUI')
-            .addItem('指定月のシートを作成 (手動入力)', 'createEmptyMonthSheetUI')
-            .addItem('年度末着地予測作成', 'generateForecastSheet')
+            .addItem('CSVを取り込む（今すぐ実行）', 'CSV取込')
+            .addItem('マスタデータをCSVから取り込む', 'マスタデータ取込')
+            .addItem('サマリーのみ更新', 'サマリー更新')
+            .addItem('月別レポートのみ更新', '月別レポート更新')
+            .addItem('月次確定データを取り込む', '月次確定データ取込')
+            .addItem('翌月のシートを作成', '翌月シート作成')
+            .addItem('指定月のシートを作成 (手動入力)', '手動入力シート作成')
+            .addItem('年度末着地予測作成', '年度末着地予測作成')
             .addSeparator()
-            .addItem('今月の計算式を更新', 'forceUpdateCurrentMonthFormulas')
+            .addItem('今月の計算式を更新', '計算式更新')
             .addToUi();
     } catch (e) {
         console.warn('onOpen UI check failed: ' + e.message);
@@ -66,7 +66,7 @@ function setup() {
     console.log('Setup completed.');
 }
 
-function importMasterData() {
+function マスタデータ取込() {
     console.log('Starting Master Import...');
     const ss = getOrCreateSpreadsheet();
     if (!ss) {
@@ -102,7 +102,7 @@ function importMasterData() {
 
     if (importedCount > 0) {
         logOrAlert('マスタデータの取り込みが完了しました。件数: ' + importedCount);
-        updateSummarySheet();
+        サマリー更新();
     } else {
         logOrAlert('target.csv または prev.csv が見つかりませんでした。');
     }
@@ -185,7 +185,7 @@ function createMasterSheet(ss, sheetName, offsetYear) {
     sheet.setColumnWidths(2, 17, 80);
 }
 
-function importCSV() {
+function CSV取込() {
     const folders = DriveApp.getFoldersByName(CONFIG.FOLDER_NAME);
     if (!folders.hasNext()) return;
     const folder = folders.next();
@@ -201,8 +201,8 @@ function importCSV() {
         }
     }
     if (processedAny) {
-        updateSummarySheet();
-        updateMonthlyReportSheet();
+        サマリー更新();
+        月別レポート更新();
     }
 }
 
@@ -264,15 +264,35 @@ function parseCsvToRecord(file) {
     const allDairyAmt = v(s1.amt.dairy) + v(s2.amt.dairy);
     const allDairyQty = v(s1.qty.dairy) + v(s2.qty.dairy);
 
+
+    // Explicitly define values to ensure order
+    const s1Total = v(s1.amt.total);
+    const s1Dairy = v(s1.amt.dairy);
+    const s1DairyQty = v(s1.qty.dairy);
+    const s1Y400 = v(s1.amt.y400);
+    const s1Y400Qty = v(s1.qty.y400);
+    const s1Y1000 = v(s1.amt.y1000);
+    const s1Y1000Qty = v(s1.qty.y1000);
+
+    const s2Total = v(s2.amt.total);
+    const s2Dairy = v(s2.amt.dairy);
+    const s2DairyQty = v(s2.qty.dairy);
+    const s2Y400 = v(s2.amt.y400);
+    const s2Y400Qty = v(s2.qty.y400);
+    const s2Y1000 = v(s2.amt.y1000);
+    const s2Y1000Qty = v(s2.qty.y1000);
+
+    // 0:宅配全社売上 (Home Total) -> Should be s1Total
+    // 1:宅配乳製品売上 (Home Dairy) -> Should be s1Dairy
     const rowValues = [
-        v(s1.amt.total),
-        v(s1.amt.dairy), v(s1.qty.dairy),
-        v(s1.amt.y400), v(s1.qty.y400),
-        v(s1.amt.y1000), v(s1.qty.y1000),
-        v(s2.amt.total),
-        v(s2.amt.dairy), v(s2.qty.dairy),
-        v(s2.amt.y400), v(s2.qty.y400),
-        v(s2.amt.y1000), v(s2.qty.y1000),
+        s1Total,
+        s1Dairy, s1DairyQty,
+        s1Y400, s1Y400Qty,
+        s1Y1000, s1Y1000Qty,
+        s2Total,
+        s2Dairy, s2DairyQty,
+        s2Y400, s2Y400Qty,
+        s2Y1000, s2Y1000Qty,
         allTotalAmt, allDairyAmt, allDairyQty
     ];
 
@@ -292,7 +312,7 @@ function processFile(file, ss) {
 }
 
 // New: Import Monthly Fix Data
-function importMonthlyFixCSV() {
+function 月次確定データ取込() {
     const folders = DriveApp.getFoldersByName(CONFIG.FOLDER_MONTHLY_FIX);
     if (!folders.hasNext()) return;
     const folder = folders.next();
@@ -331,8 +351,8 @@ function importMonthlyFixCSV() {
         }
     }
     if (processedAny) {
-        updateSummarySheet();
-        updateMonthlyReportSheet();
+        サマリー更新();
+        月別レポート更新();
         logOrAlert('月次確定取り込みが完了しました。');
     }
 }
@@ -344,32 +364,37 @@ function overwriteMonthlySheet(ss, date, dataArray) {
     // Ensure structure (migrations)
     ensureSheetStructure(ss, sheet, date);
 
-    // Clear B2:S32 (Day 1 to 31) -> Now 19 columns including Weekday? 
-    // Data is 17 cols. Day+Week is 2 cols. Total 19 cols of "Input" area? 
-    // Achievement is 3 cols. Total 22 cols.
-    // Clear range: from 1 to 19? 
-    // We want to clear Date(A), Week(B), Data(C-S).
-    sheet.getRange(2, 1, 31, 19).clearContent();
+    // Instead of clearing daily data, we overwrite the "Month Total/Average" row (Row 33)
+    // with the fixed values. Daily data (Rows 2-32) remains touched or untouched.
+    console.log('Overwriting Footer with Monthly Fix: ' + sheetName);
 
-    // Re-fill dates and weekdays
-    const days = [];
-    const weekDays = ['日', '月', '火', '水', '木', '金', '土'];
-    const year = date.getFullYear();
-    const month = date.getMonth(); // 0-indexed
-    for (let i = 1; i <= 31; i++) {
-        const d = new Date(year, month, i);
-        // Check valid month (handle Feb etc)
-        if (d.getMonth() !== month) {
-            days.push([i, '']);
-        } else {
-            days.push([i, weekDays[d.getDay()]]);
-        }
-    }
-    sheet.getRange(2, 1, 31, 2).setValues(days);
+    // Row 33 is the footer. Col 3 (C) starts the data.
+    // 17 columns of data.
+    sheet.getRange(33, 3, 1, 17).setValues([dataArray]).setBackground('#ffcccc'); // Highlight fixed
+    sheet.getRange(33, 1).setValue('月確定値'); // Label change to indicate fix
+    sheet.getRange(33, 2).setValue('');
 
-    // Write Fix to Day 1 (Row 2, Col 3)
-    sheet.getRange(2, 3, 1, 17).setValues([dataArray]);
-    sheet.getRange(2, 1).setValue('確定値');
+    // Update Achievement formulas if needed (they depend on target, not footer sum usually?)
+    // Actually, updateAchievementFormulas sets daily target formulas (T/U cols).
+    // The Summary Sheet reads from... getSheetTotals.
+    // getSheetTotals sums up rows 2-32.
+    // If we want Summary Sheet to reflect "Fixed Value", getSheetTotals needs to read Row 33
+    // OR we need to adjust how getSheetTotals works.
+
+    // HOWEVER, the user request says: "日次の実績はそのまま残すようにして".
+    // If we leave daily data, but want "Fixed Value" to become the truth,
+    // we have a discrepancy: Sum(Daily) != FixedValue.
+    // Usually "Monthly Fix" implies the official accounting number.
+
+    // If the goal is "Don't delete daily rows so we can still see them", but "Use Fixed Value for totals",
+    // then writing to Row 33 is correct for visual. 
+    // BUT getSheetTotals (used for Dashboard) recalculates SUM(2:32).
+    // So Dashboard will still show Sum(Daily).
+
+    // To make Dashboard use Fixed Value, we should update getSheetTotals to:
+    // "If Row 33 has hardcoded numbers (not formulas), use them. Else Sum(2:32)."
+
+    updateAchievementFormulas(ss, sheet, date);
 
     // Update formulas just in case
     updateAchievementFormulas(ss, sheet, date);
@@ -521,7 +546,7 @@ function createMonthlySheet(ss, sheetName, date) {
     return sheet;
 }
 
-function createEmptyMonthSheetUI() {
+function 手動入力シート作成() {
     const ui = SpreadsheetApp.getUi();
     const result = ui.prompt('シート作成', '作成する年月を入力してください (例: 2024_04)', ui.ButtonSet.OK_CANCEL);
 
@@ -542,11 +567,11 @@ function createEmptyMonthSheetUI() {
         const date = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, 1);
 
         createMonthlySheet(ss, sheetName, date);
-        ui.alert('シート "' + sheetName + '" を作成しました。\nデータを貼り付けた後、「サマリーのみ更新」を実行してください。');
+        ui.alert('シート "' + sheetName + '" を作成しました。\nデータを貼り付けた後、「サマリー更新」を実行してください。');
     }
 }
 
-function createNextMonthSheetUI() {
+function 翌月シート作成() {
     const ui = SpreadsheetApp.getUi();
     const ss = getOrCreateSpreadsheet();
     const sheets = ss.getSheets();
@@ -591,26 +616,13 @@ function createNextMonthSheetUI() {
             return;
         }
         createMonthlySheet(ss, nextSheetName, nextDate);
-        ui.alert('シート "' + nextSheetName + '" を作成しました。\nデータを貼り付けた後、「サマリーのみ更新」を実行してください。');
+        ui.alert('シート "' + nextSheetName + '" を作成しました。\nデータを貼り付けた後、「サマリー更新」を実行してください。');
     }
 }
 
-// UIが動かない場合の非常用（コード内の createTarget を書き換えて直接実行してください）
-function forceCreateSheet() {
-    const createTarget = '2026_02'; // ←ここを作りたい年月に書き換える
 
-    const ss = getOrCreateSpreadsheet();
-    if (ss.getSheetByName(createTarget)) {
-        console.log('エラー: シート ' + createTarget + ' は既に存在します。');
-        return;
-    }
-    const parts = createTarget.split('_');
-    const date = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, 1);
-    createMonthlySheet(ss, createTarget, date);
-    console.log('シート ' + createTarget + ' を作成しました。');
-}
 
-function updateSummarySheet() {
+function サマリー更新() {
     const ss = getOrCreateSpreadsheet();
     const sSheet = ss.getSheetByName(CONFIG.SHEET_SUMMARY);
     if (!sSheet) return;
@@ -738,7 +750,7 @@ function updateSummarySheet() {
     console.log('Summary updated.');
 }
 
-function updateMonthlyReportSheet() {
+function 月別レポート更新() {
     const ss = getOrCreateSpreadsheet();
     let mSheet = ss.getSheetByName(CONFIG.SHEET_MONTHLY_REPORT);
     if (!mSheet) {
@@ -876,7 +888,40 @@ function getSheetTotals(ss, sheetName) {
     const sheet = ss.getSheetByName(sheetName);
     if (!sheet) return { sums: createZeroStats(), counts: createZeroStats() }; // Empty stats
 
-    // Read Data from Col 3 (C) instead of 2 (B)
+    // Ensure structure is correct (inserts 'Weekday' column B if missing)
+    // This fixes the issue where old sheets without column B are read from column C (Data 2) instead of column B (Data 1/Weekday) -> shifted data.
+    const parts = sheetName.split('_');
+    if (parts.length === 2) {
+        const year = parseInt(parts[0], 10);
+        const month = parseInt(parts[1], 10);
+        const date = new Date(year, month - 1, 1);
+        ensureSheetStructure(ss, sheet, date);
+    }
+
+    // Check for "Fixed" status in Row 33
+    // We check A33 for '月確定値'
+    const footerLabel = sheet.getRange(33, 1).getValue();
+    const isFixed = (footerLabel === '月確定値');
+
+    if (isFixed) {
+        // If fixed, read values from C33:S33
+        const fixedData = sheet.getRange(33, 3, 1, 17).getValues()[0];
+        const sums = createZeroStats();
+        const counts = createZeroStats();
+
+        // We assume Fixed Data is TOTAL SUM for the month.
+        const daysInMonth = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10), 0).getDate();
+
+        for (let c = 0; c < 17; c++) {
+            const val = fixedData[c];
+            sums[c] = (typeof val === 'number') ? val : 0;
+            // Set counts to daysInMonth so that Average = Sum / Days logic works in Dashboard
+            counts[c] = daysInMonth;
+        }
+        return { sums, counts };
+    }
+
+    // Normal calculation (Summing daily rows)
     const data = sheet.getRange(2, 3, 31, 17).getValues();
     const sums = createZeroStats();
     const counts = createZeroStats();
@@ -894,6 +939,8 @@ function getSheetTotals(ss, sheetName) {
     }
     return { sums, counts };
 }
+
+
 
 // Working Days Map: { 'yyyy_MM': { home: 20, direct: 22 } }
 function getWorkingDays(ss) {
@@ -1003,7 +1050,7 @@ function ensureFolder(name) {
     if (!fs.hasNext()) DriveApp.createFolder(name);
 }
 
-function generateForecastSheet() {
+function 年度末着地予測作成() {
     const ss = getOrCreateSpreadsheet();
     const sheetName = '年度末着地予測';
     let sheet = ss.getSheetByName(sheetName);
@@ -1269,7 +1316,7 @@ function ensureSheetStructure(ss, sheet, date) {
 }
 
 // 手動実行用：今月のシートの計算式を強制更新する関数
-function forceUpdateCurrentMonthFormulas() {
+function 計算式更新() {
     const ss = getOrCreateSpreadsheet();
     const today = new Date();
     const sheetName = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy_MM');
