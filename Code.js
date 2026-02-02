@@ -29,10 +29,9 @@ function onOpen() {
             .addItem('マスタデータをCSVから取り込む', 'importMasterData')
             .addItem('サマリーのみ更新', 'updateSummarySheet')
             .addItem('月別レポートのみ更新', 'updateMonthlyReportSheet')
-            .addItem('サマリーのみ更新', 'updateSummarySheet')
-            .addItem('月別レポートのみ更新', 'updateMonthlyReportSheet')
             .addItem('月次確定データを取り込む', 'importMonthlyFixCSV')
-            .addItem('手動入力用シート作成', 'createEmptyMonthSheetUI')
+            .addItem('翌月のシートを作成', 'createNextMonthSheetUI')
+            .addItem('指定月のシートを作成 (手動入力)', 'createEmptyMonthSheetUI')
             .addItem('年度末着地予測作成', 'generateForecastSheet')
             .addSeparator()
             .addItem('今月の計算式を更新', 'forceUpdateCurrentMonthFormulas')
@@ -547,9 +546,58 @@ function createEmptyMonthSheetUI() {
     }
 }
 
+function createNextMonthSheetUI() {
+    const ui = SpreadsheetApp.getUi();
+    const ss = getOrCreateSpreadsheet();
+    const sheets = ss.getSheets();
+    let latestParams = { year: 0, month: 0 };
+
+    // 既存の "YYYY_MM" 形式のシートから最新の年月を探す
+    sheets.forEach(sheet => {
+        const name = sheet.getName();
+        const m = name.match(/^(\d{4})_(\d{2})$/);
+        if (m) {
+            const y = parseInt(m[1], 10);
+            const mo = parseInt(m[2], 10);
+            if (y > latestParams.year || (y === latestParams.year && mo > latestParams.month)) {
+                latestParams = { year: y, month: mo };
+            }
+        }
+    });
+
+    let nextDate;
+    if (latestParams.year === 0) {
+        // シートが一つもない場合は今月を基準にする
+        nextDate = new Date();
+        nextDate.setDate(1);
+    } else {
+        // 最新の月の翌月
+        // new Date(year, monthIndex, 1) -> monthIndexは0始まりだが、latestParams.monthは1-12
+        // 例: 2024_04 (Apr) -> params.month=4. Date(2024, 4, 1) -> May (Index 4). 正しい。
+        nextDate = new Date(latestParams.year, latestParams.month, 1);
+    }
+
+    const nextSheetName = Utilities.formatDate(nextDate, Session.getScriptTimeZone(), 'yyyy_MM');
+
+    const result = ui.alert(
+        '翌月のシート作成',
+        '最新のシートから判断して、翌月「' + nextSheetName + '」のシートを作成しますか？',
+        ui.ButtonSet.YES_NO
+    );
+
+    if (result == ui.Button.YES) {
+        if (ss.getSheetByName(nextSheetName)) {
+            ui.alert('シート "' + nextSheetName + '" は既に存在します。');
+            return;
+        }
+        createMonthlySheet(ss, nextSheetName, nextDate);
+        ui.alert('シート "' + nextSheetName + '" を作成しました。\nデータを貼り付けた後、「サマリーのみ更新」を実行してください。');
+    }
+}
+
 // UIが動かない場合の非常用（コード内の createTarget を書き換えて直接実行してください）
 function forceCreateSheet() {
-    const createTarget = '2026_01'; // ←ここを作りたい年月に書き換える
+    const createTarget = '2026_02'; // ←ここを作りたい年月に書き換える
 
     const ss = getOrCreateSpreadsheet();
     if (ss.getSheetByName(createTarget)) {
