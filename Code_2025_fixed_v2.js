@@ -7,11 +7,11 @@
  */
 
 const CONFIG = {
-    FOLDER_NAME: '実績CSVアップロード_2026年度',
-    PROCESSED_FOLDER_NAME: 'processed_2026年度',
-    FOLDER_MONTHLY_FIX: '月次確定CSVアップロード_2026年度',
-    FOLDER_MASTER_IMPORT: 'マスタデータ取込_2026年度',
-    SS_NAME: '全社実績ダッシュボード_2026年度',
+    FOLDER_NAME: '実績CSVアップロード_2025年度',
+    PROCESSED_FOLDER_NAME: 'processed_2025年度',
+    FOLDER_MONTHLY_FIX: '月次確定CSVアップロード_2025年度',
+    FOLDER_MASTER_IMPORT: 'マスタデータ取込_2025年度',
+    SS_NAME: '全社実績ダッシュボード',
     SHEET_SUMMARY: 'サマリーシート',
     SHEET_MONTHLY_REPORT: '月別レポート',
     SHEET_TARGET: '目標マスター',
@@ -33,7 +33,6 @@ function onOpen() {
             .addItem('翌月のシートを作成', '翌月シート作成')
             .addItem('指定月のシートを作成 (手動入力)', '手動入力シート作成')
             .addItem('年度末着地予測作成', '年度末着地予測作成')
-            .addItem('次年度マスター用データを生成', '次年度マスター用データ出力')
             .addSeparator()
             .addItem('今月の計算式を更新', '計算式更新')
             .addToUi();
@@ -164,7 +163,7 @@ function createMasterSheet(ss, sheetName, offsetYear) {
     const tHeaders = [
         '年月',
         '宅配_全_金', '宅配_乳_金', '宅配_乳_本', '宅配_400_金', '宅配_400_本', '宅配_1000_金', '宅配_1000_本',
-        '直販_全_金', '直販_乳_金', '直販_乳_本', '直販_ヤクルト_金', '直販_ヤクルト_本', '直販_1000_金', '直販_1000_本',
+        '直販_全_金', '直販_乳_金', '直販_乳_本', '直販_400_金', '直販_400_本', '直販_1000_金', '直販_1000_本',
         'R_全社_金', 'S_全乳_金', 'T_全乳_本'
     ];
     sheet.getRange(1, 1, 1, tHeaders.length).setValues([tHeaders]).setFontWeight('bold').setBackground('#c9daf8');
@@ -221,7 +220,6 @@ function parseCsvToRecord(file) {
         total: findHeaderIndex(header, ['合　計', '合計']),
         dairy: findHeaderIndex(header, ['乳製品計']),
         y400: findHeaderIndex(header, ['Y400類']),
-        new_yakult: findHeaderIndex(header, ['Newヤクルト類', 'newヤクルト類', 'Ｎｅｗヤクルト類', 'Newヤクルト', 'newヤクルト', 'Ｎｅｗヤクルト', 'ＮＥＷヤクルト類', 'Newヤクルト類', 'Newﾔｸﾙﾄ類', 'Newﾔｸﾙﾄ']),
         // 宅配用: yakult1000類 (小文字) 優先
         y1000_home: findHeaderIndex(header, ['yakult1000類', 'yakult1000', 'Yakult1000類', 'Y1000類', 'Y1000', 'Yakult1000', 'Y1000本', 'ｙａｋｕｌｔ１０００類', 'Ｙ１０００類', 'Ｙ１０００', 'Ｙａｋｕｌｔ１０００類']),
         // 直販用: 従来通り (Y1000類, Yakult1000類...) 優先
@@ -248,13 +246,12 @@ function parseCsvToRecord(file) {
             const t = record[name][typeKey];
             t.total = parseNumber(row[cols.total]);
             t.dairy = parseNumber(row[cols.dairy]);
+            t.y400 = parseNumber(row[cols.y400]);
 
-            // Switch Y400/NewYakult and Y1000 based on name (Home vs Direct)
+            // Switch Y1000 column based on name (Home vs Direct)
             if (name === CONFIG.NAME_S1) {
-                t.y400 = parseNumber(row[cols.y400]);
                 t.y1000 = parseNumber(row[cols.y1000_home]);
             } else {
-                t.y400 = parseNumber(row[cols.new_yakult]); // 直販はY400枠にNewヤクルトを入れる
                 t.y1000 = parseNumber(row[cols.y1000_direct]);
             }
         }
@@ -514,7 +511,7 @@ function createMonthlySheet(ss, sheetName, date) {
     const headers = [
         'Date', '曜日',
         '宅配_全_金', '宅配_乳_金', '宅配_乳_本', '宅配_400_金', '宅配_400_本', '宅配_1000_金', '宅配_1000_本',
-        '直販_全_金', '直販_乳_金', '直販_乳_本', '直販_ヤクルト_金', '直販_ヤクルト_本', '直販_1000_金', '直販_1000_本',
+        '直販_全_金', '直販_乳_金', '直販_乳_本', '直販_400_金', '直販_400_本', '直販_1000_金', '直販_1000_本',
         'R_全社_金', 'S_全乳_金', 'T_全乳_本',
         'S_宅配率', 'T_直販率', 'U_全体率'
     ];
@@ -630,15 +627,16 @@ function サマリー更新() {
     const sSheet = ss.getSheetByName(CONFIG.SHEET_SUMMARY);
     if (!sSheet) return;
 
-    sSheet.getRange('B3').setValue(new Date());
-    const baseDate = new Date(sSheet.getRange('B3').getValue());
-    const fy = getDashboardFiscalYear(ss);
+    // 2025年度完全固定（B3の日付も2026年3月末に固定）
+    const baseDate = new Date(2026, 2, 31);
+    sSheet.getRange('B3').setValue(baseDate);
+    const fy = 2025;
     const targetMap = getMasterValues(ss, CONFIG.SHEET_TARGET);
     const prevMap = getMasterValues(ss, CONFIG.SHEET_PREV);
 
     const metrics = [
         '宅配 全社売上', '宅配 乳製品売上', '宅配 乳製品本数', '宅配 Y400売上', '宅配 Y400本数', '宅配 Y1000売上', '宅配 Y1000本数',
-        '直販 全社売上', '直販 乳製品売上', '直販 乳製品本数', '直販 ヤクルト売上', '直販 ヤクルト本数', '直販 Y1000売上', '直販 Y1000本数',
+        '直販 全社売上', '直販 乳製品売上', '直販 乳製品本数', '直販 Y400売上', '直販 Y400本数', '直販 Y1000売上', '直販 Y1000本数',
         '全社売上計', '全社乳製品計', '全社乳製品本数'
     ];
     // Qty indices for Average calculation
@@ -763,9 +761,9 @@ function 月別レポート更新() {
         mSheet.getRange('B3').setValue(new Date());
     }
 
-    const baseDate = new Date(); // Always use today effectively, or check B3 if needed. 
-    // Ideally we sync with summary logic, but here we just show ALL months for the fiscal year of today.
-    const fy = getDashboardFiscalYear(ss);
+    // 2025年度完全固定
+    const baseDate = new Date(2026, 2, 31);
+    const fy = 2025;
 
     // Refresh B3
     mSheet.getRange('B3').setValue(baseDate);
@@ -776,7 +774,7 @@ function 月別レポート更新() {
 
     const metrics = [
         '宅配 全社売上', '宅配 乳製品売上', '宅配 乳製品本数', '宅配 Y400売上', '宅配 Y400本数', '宅配 Y1000売上', '宅配 Y1000本数',
-        '直販 全社売上', '直販 乳製品売上', '直販 乳製品本数', '直販 ヤクルト売上', '直販 ヤクルト本数', '直販 Y1000売上', '直販 Y1000本数',
+        '直販 全社売上', '直販 乳製品売上', '直販 乳製品本数', '直販 Y400売上', '直販 Y400本数', '直販 Y1000売上', '直販 Y1000本数',
         '全社売上計', '全社乳製品計', '全社乳製品本数'
     ];
     const qtyIndices = [2, 4, 6, 9, 11, 13, 16];
@@ -1129,7 +1127,7 @@ function 年度末着地予測作成() {
 
     const metrics = [
         '宅配 全社売上', '宅配 乳製品売上', '宅配 乳製品本数', '宅配 Y400売上', '宅配 Y400本数', '宅配 Y1000売上', '宅配 Y1000本数',
-        '直販 全社売上', '直販 乳製品売上', '直販 乳製品本数', '直販 ヤクルト売上', '直販 ヤクルト本数', '直販 Y1000売上', '直販 Y1000本数',
+        '直販 全社売上', '直販 乳製品売上', '直販 乳製品本数', '直販 Y400売上', '直販 Y400本数', '直販 Y1000売上', '直販 Y1000本数',
         '全社売上計', '全社乳製品計', '全社乳製品本数'
     ];
     // Qty indices
@@ -1346,7 +1344,7 @@ function ensureSheetStructure(ss, sheet, date) {
         const headers = [
             'Date', '曜日',
             '宅配_全_金', '宅配_乳_金', '宅配_乳_本', '宅配_400_金', '宅配_400_本', '宅配_1000_金', '宅配_1000_本',
-            '直販_全_金', '直販_乳_金', '直販_乳_本', '直販_ヤクルト_金', '直販_ヤクルト_本', '直販_1000_金', '直販_1000_本',
+            '直販_全_金', '直販_乳_金', '直販_乳_本', '直販_400_金', '直販_400_本', '直販_1000_金', '直販_1000_本',
             'R_全社_金', 'S_全乳_金', 'T_全乳_本',
             'S_宅配率', 'T_直販率', 'U_全体率'
         ];
@@ -1380,72 +1378,3 @@ function 計算式更新() {
         try { SpreadsheetApp.getUi().alert('シート ' + sheetName + ' が見つかりませんでした。'); } catch (e) { }
     }
 };
-
-
-function 次年度マスター用データ出力() {
-    console.log('Starting 次年度マスター用データ生成...');
-    const ss = getOrCreateSpreadsheet();
-    if (!ss) return;
-
-    const sheetName = '次年度用_前年実績マスター';
-    let outputSheet = ss.getSheetByName(sheetName);
-    
-    if (outputSheet) {
-        outputSheet.clear();
-    } else {
-        outputSheet = ss.insertSheet(sheetName);
-    }
-    
-    // マスター用ヘッダー
-    const headers = [
-        '年月',
-        '宅配_全_金', '宅配_乳_金', '宅配_乳_本', '宅配_400_金', '宅配_400_本', '宅配_1000_金', '宅配_1000_本',
-        '直販_全_金', '直販_乳_金', '直販_乳_本', '直販_ヤクルト_金', '直販_ヤクルト_本', '直販_1000_金', '直販_1000_本',
-        'R_全社_金', 'S_全乳_金', 'T_全乳_本'
-    ];
-    outputSheet.getRange(1, 1, 1, headers.length).setValues([headers]).setBackground('#c9daf8').setFontWeight('bold');
-    
-    const fy = getDashboardFiscalYear(ss);
-    const qtyIndices = [2, 4, 6, 9, 11, 13, 16];
-    
-    const rows = [];
-    for (let i = 0; i < 12; i++) {
-        // 例: FY2025なら 2025/04, 2025/05...
-        const d = new Date(fy, 3 + i, 1);
-        const key = Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy_MM');
-        
-        // 当月の実績値（金額・本数問わず全て「合計」が入っている）
-        const totals = getSheetTotals(ss, key);
-        
-        // 当月の日数
-        const dim = new Date(fy, 3 + i + 1, 0).getDate();
-        
-        const rowData = [d];
-        for (let j = 0; j < 17; j++) {
-            let val = totals.sums[j];
-            
-            // 数量(本数)の場合は日別平均に変換する (Dimで割る)
-            if (qtyIndices.includes(j)) {
-                val = dim > 0 ? val / dim : 0;
-            }
-            rowData.push(val);
-        }
-        rows.push(rowData);
-    }
-    
-    // データ書き込み
-    outputSheet.getRange(2, 1, 12, 18).setValues(rows);
-    
-    // フォーマット調整
-    outputSheet.getRange('A:A').setNumberFormat('yyyy/MM');
-    // B〜R列はカンマ区切り。平均値を含めExcelと同様の一般的な表示にするため小数点含める
-    outputSheet.getRange(2, 2, 12, 17).setNumberFormat('0.00'); // 小数点以下も正確に残すため
-    
-    // 行幅調整
-    outputSheet.setColumnWidth(1, 100);
-    outputSheet.setColumnWidths(2, 17, 80);
-    
-    const msg = '次年度用マスターデータのシート「' + sheetName + '」を生成しました。\nこのシートのデータをコピーして、次年度ダッシュボードの「前年実績マスター」に貼り付けてください。';
-    console.log(msg);
-    SpreadsheetApp.getUi().alert('完了', msg, SpreadsheetApp.getUi().ButtonSet.OK);
-}
